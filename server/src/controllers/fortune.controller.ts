@@ -10,6 +10,8 @@ import {
   getSamjeon,
   getJeomsi,
 } from "../services/lukim.service";
+import { recordTurn, consumeNudge, handleNudgeResponse, getSessionInfo, manualReset, trackCategories } from "../services/session.service";
+import { matchCategories } from "../data/serious-keywords";
 
 interface FortuneRequestBody {
   name?: string;
@@ -242,6 +244,26 @@ export const getMookAFortuneAPI = async (
       }
     }
 
+    // ── 세션 턴 기록 & 무기 결정 ──
+    const sessionUserId = userId ?? "anonymous";
+    const RESET_PATTERN = /새로\s*봐|다시\s*봐|처음부터|리셋|새로운\s*상담/;
+    if (RESET_PATTERN.test(combinedMessage)) {
+      manualReset(sessionUserId);
+    }
+    const { turnCount, useJeongdan: turnBasedJeongdan } = recordTurn(sessionUserId);
+
+    const matchedCategories = matchCategories(combinedMessage);
+    const categoryNames = matchedCategories.map((c) => c.category);
+    const keywordJeongdan = matchedCategories.length > 0;
+    const useJeongdan = turnBasedJeongdan || keywordJeongdan;
+
+    const switchedCategories = trackCategories(sessionUserId, categoryNames);
+    const isCategorySwitch = switchedCategories.length > 0 && turnCount > 1 && keywordJeongdan;
+
+    const categoryTones = matchedCategories.map((c) => c.tone);
+
+    console.log(`[세션] userId=${sessionUserId} | 턴=${turnCount} | 정단=${useJeongdan}${keywordJeongdan ? ` (분야: ${categoryNames.join(", ")})` : ''}${isCategorySwitch ? ` [전환: ${switchedCategories.join(", ")}]` : ''}`);
+
     const { getMookAResponse } = await import("../services/mookA.service");
     let seonbongInsight: string | undefined;
     if (shouldInjectSeonbong(combinedMessage)) {
@@ -250,18 +272,71 @@ export const getMookAFortuneAPI = async (
     } else {
       console.log("[선봉] 주입 여부: false | 메시지:", combinedMessage.slice(0, 30));
     }
-    const reply = await getMookAResponse(sajuInfo, combinedMessage, hasSaju, effectiveTargetPerson, seonbongInsight);
+    const reply = await getMookAResponse(sajuInfo, combinedMessage, hasSaju, effectiveTargetPerson, seonbongInsight, useJeongdan, categoryTones, isCategorySwitch ? switchedCategories : undefined);
 
     if (!reply) {
       return res.status(500).json({ error: true, message: "묵설이가 잠들었나봐요! (AI 응답 없음)" });
     }
 
-    return res.status(200).json({ error: false, reply });
+    return res.status(200).json({ error: false, reply, turnCount, useJeongdan, categories: categoryNames.length > 0 ? categoryNames : undefined });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     console.error("[묵설이] 오류:", errMsg);
     return res.status(500).json({ error: true, message: `묵설이가 잠들었나봐요! (${errMsg})` });
   }
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// GET /api/session/nudge — 넛지 알림 확인 (프론트 폴링용)
+// ══════════════════════════════════════════════════════════════════════════════
+export const checkNudgeAPI = async (
+  req: Request<ParamsDictionary, any, any, { userId?: string }>,
+  res: Response,
+) => {
+  const userId = req.query.userId ?? "anonymous";
+  const hasNudge = consumeNudge(userId as string);
+  return res.status(200).json({
+    nudge: hasNudge,
+    message: hasNudge ? "...아직 궁금한 거 있어요?" : null,
+  });
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// POST /api/session/nudge-response — 넛지에 대한 사용자 응답
+// ══════════════════════════════════════════════════════════════════════════════
+const WAIT_PATTERN = /기다려|나중에|잠깐|이따|좀 있다|있다가|잠시/;
+
+export const nudgeResponseAPI = async (
+  req: Request<ParamsDictionary, any, { userId?: string; message: string }>,
+  res: Response,
+) => {
+  const userId = req.body.userId ?? "anonymous";
+  const message = req.body.message ?? "";
+
+  if (WAIT_PATTERN.test(message)) {
+    handleNudgeResponse(userId, "wait");
+    return res.status(200).json({ error: false, reply: "알겠어요. 기다리고 있을게요.", reset: false });
+  }
+
+  // "기다려" 류가 아니면 → 대화 이어감 (일반 chat으로 처리)
+  handleNudgeResponse(userId, "continue");
+  return res.status(200).json({ error: false, continueChat: true });
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// GET /api/session — 세션 상태 조회
+// ══════════════════════════════════════════════════════════════════════════════
+export const getSessionAPI = async (
+  req: Request<ParamsDictionary, any, any, { userId?: string }>,
+  res: Response,
+) => {
+  const userId = req.query.userId ?? "anonymous";
+  const info = getSessionInfo(userId as string);
+  return res.status(200).json({
+    active: !!info,
+    turnCount: info?.turnCount ?? 0,
+    state: info?.state ?? "none",
+  });
 };
 
 // ══════════════════════════════════════════════════════════════════════════════

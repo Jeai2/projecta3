@@ -26,7 +26,7 @@ export const getAiGeneratedResponse = async (
 
   try {
     const genAI = new GoogleGenerativeAI(API_KEY);
-    const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
+    const model = genAI.getGenerativeModel({ model: "gemini-3.1-flash-lite-preview" });
 
     // AI에게 전달할 최종 지시문
     const finalPrompt = `You are a wise and warm storyteller. Based on the following landscape description, write a single, beautiful, and metaphorical paragraph about the person's inner world and potential. Do not mention the landscape itself, but use its mood and elements as metaphors. Respond in Korean. \n\n Landscape Description: "${prompt}"`;
@@ -67,7 +67,7 @@ export const getMookAChatResponse = async (
   try {
     const genAI = new GoogleGenerativeAI(API_KEY);
     const model = genAI.getGenerativeModel({
-      model: "gemini-2.0-flash-lite",
+      model: "gemini-3.1-flash-lite-preview",
     });
 
     const result = await model.generateContent([

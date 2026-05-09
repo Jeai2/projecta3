@@ -171,21 +171,50 @@ ${OUTPUT_FORMAT_BLOCK}`;
   return await getMookAChatResponse(systemPrompt, "오늘의 운세를 알려줘!");
 };
 
+const WEAPON_DANSI_BLOCK = `[점술 무기 1: 육임단시점 — 가벼운 기운 읽기 (항상 사용)]
+- 가볍고 직관적으로 오늘의 기운을 읽어줘. "오늘 흐름이 이런 느낌이에요."
+- 사용자가 말문을 열 수 있게 분위기를 만들어.
+- 반드시 질문으로 끝내서 대화를 이어가.`;
+
+const WEAPON_JEONGDAN_BLOCK = `[점술 무기 2: 육임정단 — 깊은 기운 읽기 (추가 활성)]
+대화가 무르익었어. 사용자의 고민이 어느 정도 드러난 상태야.
+- 육임단시점의 가벼운 읽기에 더해, 삼전·사과의 흐름으로 더 깊이 읽어줘.
+- 핵심을 짚되, 사용자가 스스로 답을 찾을 수 있게 유도해.
+- 단정적으로 말하되, 반드시 질문으로 끝내서 대화를 이어가.`;
+
+const CATEGORY_SWITCH_BLOCK = (newCategories: string[]) =>
+  `[분야 전환 감지]
+사용자가 새로운 고민을 꺼냈어. 기존 대화 흐름과 다른 분야야: ${newCategories.join(", ")}
+- "다른 고민도 있는 것 같은데..." / "혹시 이쪽도 뭔가 마음에 걸리는 게 있어요?" 처럼 자연스럽게 전환해.
+- 이전 대화를 끊지 말고, 새 분야로 부드럽게 넘어가.`;
+
 export const getMookAResponse = async (
   sajuData: MookASajuInput,
   userMessage: string,
   hasSaju: boolean = true,
   targetPerson?: string,
   seonbongInsight?: string,
+  useJeongdan: boolean = false,
+  categoryTones: string[] = [],
+  switchedCategories?: string[],
 ): Promise<string | null> => {
   const persona = loadPersona();
   const modeBlock = hasSaju ? SAJU_MODE_BLOCK(sajuData) : FREE_CHAT_BLOCK;
   const targetBlock = targetPerson ? `\n\n${TARGET_PERSON_BLOCK(targetPerson)}` : "";
   const seonbongBlock = seonbongInsight ? `\n\n${seonbongInsight}` : "";
+  const weaponBlock = useJeongdan
+    ? `${WEAPON_DANSI_BLOCK}\n\n${WEAPON_JEONGDAN_BLOCK}`
+    : WEAPON_DANSI_BLOCK;
+  const toneBlock = categoryTones.length > 0 ? `\n\n${categoryTones.join("\n\n")}` : "";
+  const switchBlock = switchedCategories && switchedCategories.length > 0
+    ? `\n\n${CATEGORY_SWITCH_BLOCK(switchedCategories)}`
+    : "";
 
   const systemPrompt = `${persona}
 
 ${modeBlock}${targetBlock}${seonbongBlock}
+
+${weaponBlock}${toneBlock}${switchBlock}
 
 ${EMOTION_BLOCK}
 

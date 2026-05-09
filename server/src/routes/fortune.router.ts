@@ -4,6 +4,9 @@ import {
   getMookAFortuneAPI,
   getLukimAPI,
   getGreetingAPI,
+  checkNudgeAPI,
+  nudgeResponseAPI,
+  getSessionAPI,
 } from "../controllers/fortune.controller";
 
 
@@ -13,6 +16,10 @@ router.post("/today", getTodayFortuneAPI);
 router.post("/chat", getMookAFortuneAPI);
 router.post("/lukim", getLukimAPI);
 router.get("/greeting", getGreetingAPI);
+
+router.get("/session", getSessionAPI);
+router.get("/session/nudge", checkNudgeAPI);
+router.post("/session/nudge-response", nudgeResponseAPI);
 
 
 export default router;

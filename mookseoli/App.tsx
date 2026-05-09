@@ -1,6 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, Animated } from 'react-native';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
+import { AppState, type AppStateStatus } from 'react-native';
 
 // 로컬 테스트: PC IP 주소. 배포 후 Railway URL로 교체
 const API_URL = 'http://192.168.219.101:3001';
@@ -119,12 +120,53 @@ function SplashScreen({ onDone }: { onDone: () => void }) {
   );
 }
 
+const NUDGE_POLL_MS = 60_000; // 60초마다 넛지 확인
+
 function ChatScreen() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoadingGreeting, setIsLoadingGreeting] = useState(true);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const flatListRef = useRef<FlatList>(null);
+  const nudgeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const checkNudge = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/session/nudge?userId=anonymous`);
+      const data = await res.json();
+      if (data.nudge && data.message) {
+        setMessages(prev => [...prev, {
+          id: Date.now().toString() + '_nudge',
+          role: 'mook',
+          text: data.message,
+        }]);
+      }
+    } catch { /* 무시 */ }
+  }, []);
+
+  // 넛지 폴링 시작/정지
+  useEffect(() => {
+    nudgeTimerRef.current = setInterval(checkNudge, NUDGE_POLL_MS);
+
+    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
+      if (state === 'active') {
+        checkNudge();
+        if (!nudgeTimerRef.current) {
+          nudgeTimerRef.current = setInterval(checkNudge, NUDGE_POLL_MS);
+        }
+      } else {
+        if (nudgeTimerRef.current) {
+          clearInterval(nudgeTimerRef.current);
+          nudgeTimerRef.current = null;
+        }
+      }
+    });
+
+    return () => {
+      if (nudgeTimerRef.current) clearInterval(nudgeTimerRef.current);
+      sub.remove();
+    };
+  }, [checkNudge]);
 
   useEffect(() => {
     const fetchGreeting = async () => {
