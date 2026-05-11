@@ -10,7 +10,7 @@ import {
   getSamjeon,
   getJeomsi,
 } from "../services/lukim.service";
-import { recordTurn, consumeNudge, handleNudgeResponse, getSessionInfo, manualReset, trackCategories } from "../services/session.service";
+import { recordTurn, consumeNudge, handleNudgeResponse, getSessionInfo, manualReset, trackCategories, setCurrentJeomsi } from "../services/session.service";
 import { matchCategories } from "../data/serious-keywords";
 
 interface FortuneRequestBody {
@@ -272,7 +272,61 @@ export const getMookAFortuneAPI = async (
     } else {
       console.log("[선봉] 주입 여부: false | 메시지:", combinedMessage.slice(0, 30));
     }
-    const reply = await getMookAResponse(sajuInfo, combinedMessage, hasSaju, effectiveTargetPerson, seonbongInsight, useJeongdan, categoryTones, isCategorySwitch ? switchedCategories : undefined);
+
+    // ── 정단 시진 결정: 첫 정단=실시간, 주제 전환=d12 다이스 ──
+    const JI_12 = ["子","丑","寅","卯","辰","巳","午","未","申","酉","戌","亥"] as const;
+    type WoljangJiLocal = typeof JI_12[number];
+    let jeomsiOverride: WoljangJiLocal | undefined;
+    if (isCategorySwitch) {
+      const roll = Math.floor(Math.random() * 12); // 0~11
+      jeomsiOverride = JI_12[roll];
+      setCurrentJeomsi(sessionUserId, jeomsiOverride);
+      console.log(`[정단] 주제 전환 → d12 다이스 시진: ${jeomsiOverride} (roll=${roll + 1})`);
+    }
+
+    // ── 육임정단 해석 (짝사랑 등 세부 키워드 매칭 시) ──
+    let jeongdanInsight: string | undefined;
+    const CRUSH_KEYWORDS = /짝사랑|짝사|좋아하는\s*사람|이성으로|친구에서|고백/;
+    if (useJeongdan && categoryNames.includes("연애") && CRUSH_KEYWORDS.test(combinedMessage) && effectiveGender) {
+      try {
+        const { interpretCrush } = await import("../data/jeongdan/crush");
+        const now = new Date();
+        const sagwa = getSagwa(now, jeomsiOverride);
+        const samjeon = getSamjeon(now, jeomsiOverride);
+        const cheonjibando = getCheonjibando(now, jeomsiOverride);
+        const iljinGanji = (await import("../services/saju.service")).getDayGanji(now);
+
+        if (sagwa && samjeon && cheonjibando) {
+          const result = interpretCrush({
+            sagwa, samjeon, cheonjibando,
+            ilgan: iljinGanji[0],
+            ilji: iljinGanji[1] as any,
+            gender: effectiveGender,
+          });
+
+          jeongdanInsight = `[육임정단 해석 — 짝사랑]
+전체 흐름: ${result.gwaFirstImpression}
+이성으로 보는가 (${result.q1.score}점): ${result.q1.summary}
+다른 사람: ${result.q2.reason}
+사귈 가능성: ${result.q3.conditions.join(" / ")}
+지속 가능성 (${result.q4.score}점): ${result.q4.summary}
+행동 방향: ${result.q5.action === "approach" ? "적극적으로" : "기다리기"} — ${result.q5.reasons[0] ?? ""}
+최적 타이밍: ${result.q6.method}
+절대 금지: ${result.q7.warning} — ${result.q7.detail}
+
+[묵설이 활용 지침]
+- 위 해석을 그대로 읽어주지 마. 묵설이 말투로 자연스럽게 풀어서 전달해.
+- 한 번에 다 말하지 마. 사용자 질문에 맞는 부분만 골라서 답해.
+- 점수는 절대 말하지 마. 느낌과 감각으로 표현해.
+- 반드시 질문으로 끝내서 대화를 이어가.`;
+          console.log("[정단] 짝사랑 해석 주입 완료");
+        }
+      } catch (e) {
+        console.error("[정단] 짝사랑 해석 오류:", e);
+      }
+    }
+
+    const reply = await getMookAResponse(sajuInfo, combinedMessage, hasSaju, effectiveTargetPerson, seonbongInsight, useJeongdan, categoryTones, isCategorySwitch ? switchedCategories : undefined, jeongdanInsight);
 
     if (!reply) {
       return res.status(500).json({ error: true, message: "묵설이가 잠들었나봐요! (AI 응답 없음)" });

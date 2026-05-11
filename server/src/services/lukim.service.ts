@@ -265,8 +265,8 @@ export interface CheonjibandoPair {
  * @param targetDate 점치 시각 (로컬 시간)
  * @returns 12개 짝꿍 배열 (지반↔천반↔천장↔둔간/공망), 또는 null (월장 데이터 부족 시)
  */
-export function getCheonjibando(targetDate: Date): CheonjibandoPair[] | null {
-  const jeomsi = getJeomsi(targetDate);
+export function getCheonjibando(targetDate: Date, jeomsiOverride?: WoljangJi): CheonjibandoPair[] | null {
+  const jeomsi = jeomsiOverride ?? getJeomsi(targetDate);
   const woljang = getWoljang(targetDate);
   if (!woljang) return null;
 
@@ -411,8 +411,8 @@ export interface Sagwa {
  * @param targetDate 점치 시각 (로컬 시간)
  * @returns 사과 4개 (gw1~gw4), 또는 null (천지반도/기궁 데이터 부족 시)
  */
-export function getSagwa(targetDate: Date): Sagwa | null {
-  const cheonjibando = getCheonjibando(targetDate);
+export function getSagwa(targetDate: Date, jeomsiOverride?: WoljangJi): Sagwa | null {
+  const cheonjibando = getCheonjibando(targetDate, jeomsiOverride);
   if (!cheonjibando) return null;
 
   const iljinGanji = getDayGanji(targetDate);
@@ -710,11 +710,11 @@ function pickByJibanPriority(items: GeukJeok[]): GeukJeok | null {
  * 삼전(三傳)을 계산한다.
  * 사과 + 천지반도를 기반으로 10과 중 하나를 판별하고 초·중·말전을 결정.
  */
-export function getSamjeon(targetDate: Date): Samjeon | null {
-  const cheonjibando = getCheonjibando(targetDate);
+export function getSamjeon(targetDate: Date, jeomsiOverride?: WoljangJi): Samjeon | null {
+  const cheonjibando = getCheonjibando(targetDate, jeomsiOverride);
   if (!cheonjibando) return null;
 
-  const sagwa = getSagwa(targetDate);
+  const sagwa = getSagwa(targetDate, jeomsiOverride);
   if (!sagwa) return null;
 
   const iljinGanji = getDayGanji(targetDate);
@@ -722,7 +722,7 @@ export function getSamjeon(targetDate: Date): Samjeon | null {
   const ilJi = iljinGanji.charAt(1) as WoljangJi;
   const ganIsYang = isYangGan(ilGan);
 
-  const jeomsi = getJeomsi(targetDate);
+  const jeomsi = jeomsiOverride ?? getJeomsi(targetDate);
   const woljang = getWoljang(targetDate);
 
   const entries = sagwaToEntries(sagwa);

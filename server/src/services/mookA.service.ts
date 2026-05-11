@@ -197,6 +197,7 @@ export const getMookAResponse = async (
   useJeongdan: boolean = false,
   categoryTones: string[] = [],
   switchedCategories?: string[],
+  jeongdanInsight?: string,
 ): Promise<string | null> => {
   const persona = loadPersona();
   const modeBlock = hasSaju ? SAJU_MODE_BLOCK(sajuData) : FREE_CHAT_BLOCK;
@@ -209,12 +210,13 @@ export const getMookAResponse = async (
   const switchBlock = switchedCategories && switchedCategories.length > 0
     ? `\n\n${CATEGORY_SWITCH_BLOCK(switchedCategories)}`
     : "";
+  const jeongdanBlock = jeongdanInsight ? `\n\n${jeongdanInsight}` : "";
 
   const systemPrompt = `${persona}
 
 ${modeBlock}${targetBlock}${seonbongBlock}
 
-${weaponBlock}${toneBlock}${switchBlock}
+${weaponBlock}${toneBlock}${switchBlock}${jeongdanBlock}
 
 ${EMOTION_BLOCK}
 

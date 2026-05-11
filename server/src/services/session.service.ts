@@ -16,6 +16,7 @@ interface Session {
   resetTimer: NodeJS.Timeout | null;
   pendingNudge: boolean;
   previousCategories: string[];
+  currentJeomsi: string | null; // 다이스로 결정된 현재 시진 (null = 실시간 사용)
 }
 
 const sessions = new Map<string, Session>();
@@ -29,6 +30,7 @@ function createSession(): Session {
     resetTimer: null,
     pendingNudge: false,
     previousCategories: [],
+    currentJeomsi: null,
   };
 }
 
@@ -131,4 +133,13 @@ export function getPreviousCategories(userId: string): string[] {
 
 export function manualReset(userId: string): void {
   resetSession(userId);
+}
+
+export function setCurrentJeomsi(userId: string, jeomsi: string): void {
+  const session = sessions.get(userId);
+  if (session) session.currentJeomsi = jeomsi;
+}
+
+export function getCurrentJeomsi(userId: string): string | null {
+  return sessions.get(userId)?.currentJeomsi ?? null;
 }
