@@ -4,9 +4,24 @@
  * - 30분 무입력 → 넛지 알림 → 30분 추가 무응답 → 리셋
  */
 
-const NUDGE_TIMEOUT_MS = 30 * 60 * 1000; // 30분
+import {
+  createEmptyConsultationContext,
+  type ConsultationContext,
+  type ConsultationIntakeStage,
+  type ConsultationPersonProfile,
+} from "../types/consultation";
 
-type SessionState = "active" | "nudged" | "waiting";
+const NUDGE_TIMEOUT_MS = 30 * 60 * 1000; // 30분
+const MAX_CONVERSATION_MESSAGES = 16;
+const MAX_MESSAGE_LENGTH = 2000;
+
+export type SessionState = "active" | "nudged" | "waiting";
+
+export interface ConversationMessage {
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+}
 
 interface Session {
   turnCount: number;
@@ -17,6 +32,21 @@ interface Session {
   pendingNudge: boolean;
   previousCategories: string[];
   currentJeomsi: string | null; // 다이스로 결정된 현재 시진 (null = 실시간 사용)
+  currentDansiInterpretationId: number | null;
+  consultation: ConsultationContext;
+  messages: ConversationMessage[];
+}
+
+export interface PersistedSessionSnapshot {
+  turnCount: number;
+  state: SessionState;
+  lastActivityAt: number;
+  pendingNudge: boolean;
+  previousCategories: string[];
+  currentJeomsi: string | null;
+  currentDansiInterpretationId: number | null;
+  consultation: ConsultationContext;
+  messages: ConversationMessage[];
 }
 
 const sessions = new Map<string, Session>();
@@ -31,6 +61,9 @@ function createSession(): Session {
     pendingNudge: false,
     previousCategories: [],
     currentJeomsi: null,
+    currentDansiInterpretationId: null,
+    consultation: createEmptyConsultationContext(),
+    messages: [],
   };
 }
 
@@ -100,10 +133,238 @@ export function consumeNudge(userId: string): boolean {
   return true;
 }
 
-export function getSessionInfo(userId: string): { turnCount: number; state: SessionState } | null {
+export function getSessionInfo(userId: string): {
+  turnCount: number;
+  state: SessionState;
+  messageCount: number;
+  hasDansi: boolean;
+  hasAccountProfileCandidate: boolean;
+  hasReadingSubject: boolean;
+  hasRelationshipTarget: boolean;
+  intakeStage: ConsultationIntakeStage;
+} | null {
   const session = sessions.get(userId);
   if (!session) return null;
-  return { turnCount: session.turnCount, state: session.state };
+  return {
+    turnCount: session.turnCount,
+    state: session.state,
+    messageCount: session.messages.length,
+    hasDansi: session.currentDansiInterpretationId !== null,
+    hasAccountProfileCandidate: session.consultation.accountProfileCandidate !== null,
+    hasReadingSubject: session.consultation.readingSubject !== null,
+    hasRelationshipTarget: session.consultation.relationshipTarget !== null,
+    intakeStage: session.consultation.intake.stage,
+  };
+}
+
+export function appendConversationMessage(
+  userId: string,
+  role: ConversationMessage["role"],
+  content: string,
+): void {
+  let session = sessions.get(userId);
+  if (!session) {
+    session = createSession();
+    sessions.set(userId, session);
+  }
+
+  const trimmedContent = content.trim().slice(0, MAX_MESSAGE_LENGTH);
+  if (!trimmedContent) return;
+
+  session.messages.push({
+    role,
+    content: trimmedContent,
+    createdAt: Date.now(),
+  });
+
+  if (session.messages.length > MAX_CONVERSATION_MESSAGES) {
+    session.messages.splice(0, session.messages.length - MAX_CONVERSATION_MESSAGES);
+  }
+}
+
+export function getConversationHistory(userId: string): ConversationMessage[] {
+  const session = sessions.get(userId);
+  return session ? [...session.messages] : [];
+}
+
+function ensureSession(userId: string): Session {
+  let session = sessions.get(userId);
+  if (!session) {
+    session = createSession();
+    sessions.set(userId, session);
+  }
+  return session;
+}
+
+function cloneProfile(profile: ConsultationPersonProfile | null): ConsultationPersonProfile | null {
+  if (!profile) return null;
+  return {
+    ...profile,
+    birth: profile.birth ? { ...profile.birth } : undefined,
+    birthYearPillar: profile.birthYearPillar ? { ...profile.birthYearPillar } : undefined,
+  };
+}
+
+function cloneConsultation(context: ConsultationContext): ConsultationContext {
+  return {
+    accountProfileCandidate: cloneProfile(context.accountProfileCandidate),
+    readingSubject: cloneProfile(context.readingSubject),
+    knownSubjects: context.knownSubjects
+      .map((profile) => cloneProfile(profile))
+      .filter((profile): profile is ConsultationPersonProfile => profile !== null),
+    pendingReadingSubject: cloneProfile(context.pendingReadingSubject),
+    relationshipTarget: cloneProfile(context.relationshipTarget),
+    intake: { ...context.intake },
+  };
+}
+
+function identifiesSamePerson(
+  first: ConsultationPersonProfile | null,
+  second: ConsultationPersonProfile | null,
+): boolean {
+  if (!first || !second) return false;
+  if (first.kind === "self" && second.kind === "self") return true;
+
+  return (
+    first.kind === second.kind &&
+    first.relationToUser === second.relationToUser &&
+    (first.displayName ?? "") === (second.displayName ?? "")
+  );
+}
+
+function hasReadingBasisChanged(
+  previous: ConsultationPersonProfile | null,
+  next: ConsultationPersonProfile | null,
+): boolean {
+  if (previous?.profileId !== next?.profileId) return true;
+  if (!previous || !next) return false;
+
+  return (
+    previous.genderForCalculation !== next.genderForCalculation ||
+    previous.birth?.date !== next.birth?.date ||
+    previous.birth?.calendarType !== next.birth?.calendarType ||
+    previous.birth?.isLeapMonth !== next.birth?.isLeapMonth ||
+    previous.birthYearPillar?.gan !== next.birthYearPillar?.gan ||
+    previous.birthYearPillar?.ji !== next.birthYearPillar?.ji ||
+    previous.birthYearPillar?.solarBirthDate !== next.birthYearPillar?.solarBirthDate
+  );
+}
+
+export function getConsultationContext(userId: string): ConsultationContext | null {
+  const session = sessions.get(userId);
+  if (!session) return null;
+  return cloneConsultation(session.consultation);
+}
+
+export function hasInMemorySession(userId: string): boolean {
+  return sessions.has(userId);
+}
+
+export function exportSessionSnapshot(userId: string): PersistedSessionSnapshot | null {
+  const session = sessions.get(userId);
+  if (!session) return null;
+  return {
+    turnCount: session.turnCount,
+    state: session.state,
+    lastActivityAt: session.lastActivityAt,
+    pendingNudge: session.pendingNudge,
+    previousCategories: [...session.previousCategories],
+    currentJeomsi: session.currentJeomsi,
+    currentDansiInterpretationId: session.currentDansiInterpretationId,
+    consultation: cloneConsultation(session.consultation),
+    messages: session.messages.map((message) => ({ ...message })),
+  };
+}
+
+export function restoreSessionSnapshot(userId: string, snapshot: PersistedSessionSnapshot): void {
+  const previous = sessions.get(userId);
+  if (previous) clearTimers(previous);
+  sessions.set(userId, {
+    turnCount: snapshot.turnCount,
+    state: snapshot.state,
+    lastActivityAt: snapshot.lastActivityAt,
+    nudgeTimer: null,
+    resetTimer: null,
+    pendingNudge: false,
+    previousCategories: [...snapshot.previousCategories],
+    currentJeomsi: snapshot.currentJeomsi,
+    currentDansiInterpretationId: snapshot.currentDansiInterpretationId,
+    consultation: cloneConsultation(snapshot.consultation),
+    messages: snapshot.messages
+      .slice(-MAX_CONVERSATION_MESSAGES)
+      .map((message) => ({ ...message })),
+  });
+}
+
+export function setAccountProfileCandidate(
+  userId: string,
+  profile: ConsultationPersonProfile | null,
+): void {
+  const session = ensureSession(userId);
+  session.consultation.accountProfileCandidate = cloneProfile(profile);
+}
+
+export function setReadingSubject(
+  userId: string,
+  profile: ConsultationPersonProfile | null,
+): void {
+  const session = ensureSession(userId);
+  const nextProfile = cloneProfile(profile);
+  const shouldResetReading = hasReadingBasisChanged(session.consultation.readingSubject, nextProfile);
+  session.consultation.readingSubject = nextProfile;
+
+  if (nextProfile) {
+    const index = session.consultation.knownSubjects.findIndex((known) =>
+      identifiesSamePerson(known, nextProfile)
+    );
+    if (index >= 0) {
+      session.consultation.knownSubjects[index] = nextProfile;
+    } else {
+      session.consultation.knownSubjects.push(nextProfile);
+    }
+  }
+
+  if (shouldResetReading) {
+    // 기준 인물이나 출생 기준이 바뀌면 이전 대상의 결과는 재사용할 수 없다.
+    session.currentDansiInterpretationId = null;
+    session.currentJeomsi = null;
+  }
+}
+
+export function setPendingReadingSubject(
+  userId: string,
+  profile: ConsultationPersonProfile | null,
+): void {
+  const session = ensureSession(userId);
+  session.consultation.pendingReadingSubject = cloneProfile(profile);
+}
+
+export function setRelationshipTarget(
+  userId: string,
+  profile: ConsultationPersonProfile | null,
+): void {
+  const session = ensureSession(userId);
+  session.consultation.relationshipTarget = cloneProfile(profile);
+}
+
+export function setConsultationIntake(
+  userId: string,
+  stage: ConsultationIntakeStage,
+  initialQuestion?: string,
+): void {
+  const session = ensureSession(userId);
+  session.consultation.intake = {
+    stage,
+    initialQuestion: initialQuestion ?? session.consultation.intake.initialQuestion,
+  };
+}
+
+export function touchSession(userId: string): void {
+  const session = ensureSession(userId);
+  session.lastActivityAt = Date.now();
+  session.state = "active";
+  session.pendingNudge = false;
+  startNudgeTimer(userId, session);
 }
 
 /**
@@ -142,4 +403,15 @@ export function setCurrentJeomsi(userId: string, jeomsi: string): void {
 
 export function getCurrentJeomsi(userId: string): string | null {
   return sessions.get(userId)?.currentJeomsi ?? null;
+}
+
+export function setCurrentDansiInterpretationId(userId: string, interpretationId: number): void {
+  const session = sessions.get(userId);
+  if (session && session.currentDansiInterpretationId === null) {
+    session.currentDansiInterpretationId = interpretationId;
+  }
+}
+
+export function getCurrentDansiInterpretationId(userId: string): number | null {
+  return sessions.get(userId)?.currentDansiInterpretationId ?? null;
 }

@@ -6,11 +6,7 @@ import {
   analyzeCompatibility,
   type CompatibilityResult,
 } from "./compatibility.service";
-import { SIPSIN_TABLE, JI } from "../data/saju.data";
-import {
-  getLukimInterpretation,
-  type LukimInterpretation,
-} from "../data/lukim-interpretations";
+import { SIPSIN_TABLE } from "../data/saju.data";
 import type {
   TodayFortuneResponse,
   IljinData,
@@ -27,6 +23,11 @@ import {
   getTenGodMessage,
 } from "./today-fortune.utils";
 import { calcSajuIching } from "./iching.service";
+import {
+  calculateDansiResult,
+  type DansiCalculationResult,
+} from "./lukim-dansi.service";
+import { resolveSolarBirthDate } from "./birth-date.service";
 
 // 오행 매핑
 const GAN_TO_OHAENG: Record<string, "木" | "火" | "土" | "金" | "水"> = {
@@ -209,107 +210,6 @@ const GANJI_TO_TIME: Record<string, { good: string[]; bad: string[] }> = {
   // ... 나머지도 동일한 패턴으로 추가 가능
 };
 
-const createLukimValueMap = (): Record<string, number> => {
-  const map: Record<string, number> = {};
-  const assign = (symbols: string[], value: number) => {
-    symbols.forEach((symbol) => {
-      map[symbol] = value;
-    });
-  };
-
-  assign(["甲", "己", "子", "午", "갑", "기", "자", "오"], 9);
-  assign(["乙", "庚", "丑", "未", "을", "경", "축", "미"], 8);
-  assign(["丙", "辛", "寅", "申", "병", "신", "인", "신"], 7);
-  assign(["丁", "壬", "卯", "酉", "정", "임", "묘", "유"], 6);
-  assign(["戊", "癸", "辰", "戌", "무", "계", "진", "술"], 5);
-  assign(["巳", "亥", "사", "해"], 4);
-
-  return map;
-};
-
-const LUKIM_VALUE_MAP = createLukimValueMap();
-
-type LukimComponentType = "birthYearGan" | "birthYearJi" | "dayGan" | "hourJi";
-
-interface LukimComponentDetail {
-  type: LukimComponentType;
-  label: string;
-  symbol: string;
-  value: number;
-}
-
-interface LukimCalculationResult {
-  total: number;
-  interpretation: LukimInterpretation | null;
-  components: LukimComponentDetail[];
-}
-
-const getLukimNumericValue = (symbol: string): number | null => {
-  if (!symbol) return null;
-  return LUKIM_VALUE_MAP[symbol] ?? null;
-};
-
-const getHourBranchSymbol = (date: Date): string => {
-  const hour = date.getHours();
-  const minute = date.getMinutes();
-  const totalMinutes = hour * 60 + minute;
-  const adjustedMinutes = (totalMinutes + 30) % 1440;
-  const hourJiIndex = Math.floor(adjustedMinutes / 120);
-  return JI[hourJiIndex];
-};
-
-const calculateLukimResult = (
-  gender: "M" | "W",
-  userPillars: {
-    year: { gan: string; ji: string };
-  },
-  iljin: IljinData,
-  referenceDate: Date
-): LukimCalculationResult | null => {
-  const birthSymbol =
-    gender === "M" ? userPillars.year.gan : userPillars.year.ji;
-  const birthComponent: LukimComponentDetail = {
-    type: gender === "M" ? "birthYearGan" : "birthYearJi",
-    label: gender === "M" ? "생년간" : "생년지",
-    symbol: birthSymbol,
-    value: getLukimNumericValue(birthSymbol) ?? 0,
-  };
-
-  const dayComponent: LukimComponentDetail = {
-    type: "dayGan",
-    label: "점일간",
-    symbol: iljin.gan,
-    value: getLukimNumericValue(iljin.gan) ?? 0,
-  };
-
-  const hourBranch = getHourBranchSymbol(referenceDate);
-  const hourComponent: LukimComponentDetail = {
-    type: "hourJi",
-    label: "점시지",
-    symbol: hourBranch,
-    value: getLukimNumericValue(hourBranch) ?? 0,
-  };
-
-  const components = [birthComponent, dayComponent, hourComponent];
-
-  if (components.some((component) => component.value === 0)) {
-    return null;
-  }
-
-  const total = components.reduce((sum, component) => sum + component.value, 0);
-  const interpretation = getLukimInterpretation(total);
-
-  if (!interpretation) {
-    return null;
-  }
-
-  return {
-    total,
-    interpretation,
-    components,
-  };
-};
-
 interface FortuneGenerationOptions {
   sipsinOfToday?: {
     dayGan: string;
@@ -348,7 +248,7 @@ export const generateIljinData = (date: Date): IljinData => {
 export const generateFortuneWithCompatibility = (
   iljin: IljinData,
   compatibility: CompatibilityResult,
-  lukim: LukimCalculationResult | null,
+  lukim: DansiCalculationResult | null,
   options?: FortuneGenerationOptions
 ): IljinFortune => {
   const { analysis } = compatibility;
@@ -482,28 +382,17 @@ export const getTodayFortune = async (userInfo: {
   birthDate: string;
   birthTime: string;
   birthPlace: string;
+  isLeapMonth?: boolean;
 }) => {
   const today = new Date();
   const iljin = generateIljinData(today);
 
-  // 사용자 사주 계산 (음력이면 양력으로 변환)
-  let birthDateObj: Date;
-  if (userInfo.calendarType === "lunar") {
-    try {
-      const [yearStr, monthStr, dayStr] = userInfo.birthDate.split("-");
-      const KoreanLunarCalendar = (await import("korean-lunar-calendar")).default;
-      const cal = new KoreanLunarCalendar();
-      cal.setLunarDate(parseInt(yearStr), parseInt(monthStr), parseInt(dayStr), false);
-      const solar = cal.getSolarCalendar();
-      birthDateObj = new Date(
-        `${solar.year}-${String(solar.month).padStart(2, "0")}-${String(solar.day).padStart(2, "0")}T${userInfo.birthTime || "12:00"}:00`
-      );
-    } catch {
-      birthDateObj = new Date(`${userInfo.birthDate}T${userInfo.birthTime || "12:00"}:00`);
-    }
-  } else {
-    birthDateObj = new Date(`${userInfo.birthDate}T${userInfo.birthTime || "12:00"}:00`);
-  }
+  const { date: birthDateObj } = await resolveSolarBirthDate({
+    birthDate: userInfo.birthDate,
+    birthTime: userInfo.birthTime,
+    calendarType: userInfo.calendarType,
+    isLeapMonth: userInfo.isLeapMonth,
+  });
   const sajuResult = await getSajuDetails(birthDateObj, userInfo.gender);
   const userPillars = sajuResult.sajuData.pillars;
   const userDayGan = userPillars.day.gan;
@@ -550,17 +439,14 @@ export const getTodayFortune = async (userInfo: {
     referenceDate: today,
   });
 
-  const lukimResult = calculateLukimResult(
-    userInfo.gender,
-    {
-      year: {
-        gan: userPillars.year.gan,
-        ji: userPillars.year.ji,
-      },
+  const lukimResult = calculateDansiResult({
+    gender: userInfo.gender,
+    birthYear: {
+      gan: userPillars.year.gan,
+      ji: userPillars.year.ji,
     },
-    iljin,
-    today
-  );
+    referenceDate: today,
+  });
 
   // 상성 분석을 반영한 운세 생성
   const fortune = generateFortuneWithCompatibility(

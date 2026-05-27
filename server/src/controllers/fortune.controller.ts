@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { ParamsDictionary } from "express-serve-static-core";
+import { randomUUID } from "crypto";
 import { getTodayFortune } from "../services/today-fortune.service";
 import type { MookADebounceResult } from "../services/mookA-debounce.service";
 import {
@@ -10,8 +11,29 @@ import {
   getSamjeon,
   getJeomsi,
 } from "../services/lukim.service";
-import { recordTurn, consumeNudge, handleNudgeResponse, getSessionInfo, manualReset, trackCategories, setCurrentJeomsi } from "../services/session.service";
+import {
+  appendConversationMessage,
+  consumeNudge,
+  getConversationHistory,
+  getConsultationContext,
+  getCurrentDansiInterpretationId,
+  getSessionInfo,
+  handleNudgeResponse,
+  manualReset,
+  recordTurn,
+  setAccountProfileCandidate,
+  setCurrentDansiInterpretationId,
+  setCurrentJeomsi,
+  setReadingSubject,
+  setRelationshipTarget,
+  touchSession,
+  trackCategories,
+} from "../services/session.service";
+import { getLukimInterpretation, type LukimInterpretation } from "../data/lukim-interpretations";
 import { matchCategories } from "../data/serious-keywords";
+import { handleConsultationIntake } from "../services/consultation-intake.service";
+import { resolveSolarBirthDate } from "../services/birth-date.service";
+import type { CalendarType, ConsultationPersonProfile, GenderForCalculation, SocialLoginProvider } from "../types/consultation";
 
 interface FortuneRequestBody {
   name?: string;
@@ -20,32 +42,12 @@ interface FortuneRequestBody {
   calendarType: "solar" | "lunar";
   birthTime?: string;
   birthPlace?: string;
+  isLeapMonth?: boolean;
 }
 
 interface ErrorResponseBody {
   error: true;
   message: string;
-}
-
-async function toSolarDate(
-  birthDate: string,
-  calendarType: "solar" | "lunar",
-  birthTime?: string,
-): Promise<Date> {
-  const timeStr = birthTime && birthTime.trim() !== "" ? birthTime : "12:00";
-  if (calendarType === "lunar") {
-    try {
-      const [yearStr, monthStr, dayStr] = birthDate.split("-");
-      const KoreanLunarCalendar = (await import("korean-lunar-calendar")).default;
-      const calendar = new KoreanLunarCalendar();
-      calendar.setLunarDate(parseInt(yearStr), parseInt(monthStr), parseInt(dayStr), false);
-      const solar = calendar.getSolarCalendar();
-      return new Date(`${solar.year}-${String(solar.month).padStart(2, "0")}-${String(solar.day).padStart(2, "0")}T${timeStr}:00`);
-    } catch {
-      return new Date(`${birthDate}T${timeStr}:00`);
-    }
-  }
-  return new Date(`${birthDate}T${timeStr}:00`);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -56,7 +58,7 @@ export const getTodayFortuneAPI = async (
   res: Response,
 ) => {
   try {
-    const { name, birthDate, gender, calendarType, birthTime, birthPlace } = req.body;
+    const { name, birthDate, gender, calendarType, birthTime, birthPlace, isLeapMonth } = req.body;
 
     if (!birthDate || !gender || !calendarType) {
       return res.status(400).json({ error: true, message: "필수 필드가 누락되었습니다." });
@@ -69,6 +71,7 @@ export const getTodayFortuneAPI = async (
       calendarType,
       birthTime: birthTime || "",
       birthPlace: birthPlace || "",
+      isLeapMonth,
     });
 
     return res.status(200).json({ error: false, data: result });
@@ -122,7 +125,46 @@ export const getLukimAPI = async (
 // ══════════════════════════════════════════════════════════════════════════════
 
 const TODAY_FORTUNE_PATTERN = /!?\s*오늘\s*운세|오늘의?\s*운세|오늘\s*운세\s*봐/i;
+const RELATIONSHIP_READING_PATTERN =
+  /궁합|결혼|혼인|부부|관계|사이|잘\s*될|잘\s*맞|재회|헤어|이별|속마음|마음\s*(알|궁금)|인연/;
 const SPAM_REPLY = "아우 정신없어! 스승님, 이 사람이 자꾸 말을 끊어서 해요! 짹!";
+
+function getProvidedConversationId(conversationId?: string, userId?: string): string | undefined {
+  const candidate = conversationId?.trim() || userId?.trim();
+  if (!candidate || candidate === "anonymous") return undefined;
+  return candidate.slice(0, 128);
+}
+
+function resolveConversationId(conversationId?: string, userId?: string): string {
+  return getProvidedConversationId(conversationId, userId) ?? randomUUID();
+}
+
+function getAuthenticatedUserId(res: Response): string | undefined {
+  const candidate = res.locals.authenticatedUserId;
+  return typeof candidate === "string" && candidate.trim() ? candidate.trim().slice(0, 128) : undefined;
+}
+
+async function restoreAuthorizedSession(conversationId: string, res: Response): Promise<boolean> {
+  const { hydratePersistentSession } = await import("../services/persistent-session.service");
+  const status = await hydratePersistentSession(conversationId, getAuthenticatedUserId(res));
+  if (status !== "forbidden") return true;
+  res.status(403).json({ error: true, message: "이 상담에 접근할 권한이 없습니다." });
+  return false;
+}
+
+async function saveAuthorizedSession(conversationId: string, res: Response): Promise<void> {
+  const { persistSessionForUser } = await import("../services/persistent-session.service");
+  await persistSessionForUser(conversationId, getAuthenticatedUserId(res));
+}
+
+interface ChatCalculationProfile {
+  birthDate: string;
+  birthTime?: string;
+  gender: GenderForCalculation;
+  calendarType: CalendarType;
+  isLeapMonth?: boolean;
+  sessionSubject?: ConsultationPersonProfile;
+}
 
 /**
  * 선봉 인사이트 주입 여부 판단 — 4가지 트리거 중 하나라도 해당하면 true
@@ -158,6 +200,7 @@ export const getMookAFortuneAPI = async (
     ParamsDictionary,
     unknown,
     {
+      conversationId?: string;
       userId?: string;
       birthDate?: string;
       birthTime?: string;
@@ -165,25 +208,29 @@ export const getMookAFortuneAPI = async (
       message: string;
       targetPerson?: string;
       calendarType?: "solar" | "lunar";
+      isLeapMonth?: boolean;
     }
   >,
   res: Response,
 ) => {
   try {
-    const { userId, birthDate, birthTime, gender, message, targetPerson, calendarType } = req.body;
+    const { conversationId, userId, birthDate, birthTime, gender, message, targetPerson, calendarType, isLeapMonth } = req.body;
 
     if (!message) {
       return res.status(400).json({ error: true, message: "message가 필요합니다." });
     }
 
+    const sessionUserId = resolveConversationId(conversationId, userId);
+    if (!(await restoreAuthorizedSession(sessionUserId, res))) return;
+    const useLegacyDebounce = !!getProvidedConversationId(undefined, userId);
     const { collectAndWait, createImmediateResult } = await import("../services/mookA-debounce.service");
 
-    const debouncedOrCollecting = userId
-      ? await collectAndWait({ userId, message, birthDate, birthTime, gender, calendarType, targetPerson })
-      : createImmediateResult({ message, birthDate, birthTime, gender, calendarType, targetPerson });
+    const debouncedOrCollecting = useLegacyDebounce
+      ? await collectAndWait({ userId: sessionUserId, message, birthDate, birthTime, gender, calendarType, isLeapMonth, targetPerson })
+      : createImmediateResult({ message, birthDate, birthTime, gender, calendarType, isLeapMonth, targetPerson });
 
-    if (userId && typeof debouncedOrCollecting === "object" && "primary" in debouncedOrCollecting && !debouncedOrCollecting.primary) {
-      return res.status(202).json({ error: false, status: "collecting", sendToUser: false, hint: "묵설이가 읽고 있어요..." });
+    if (useLegacyDebounce && typeof debouncedOrCollecting === "object" && "primary" in debouncedOrCollecting && !debouncedOrCollecting.primary) {
+      return res.status(202).json({ error: false, conversationId: sessionUserId, status: "collecting", sendToUser: false, hint: "묵설이가 읽고 있어요..." });
     }
 
     const debounced = debouncedOrCollecting as MookADebounceResult;
@@ -193,21 +240,79 @@ export const getMookAFortuneAPI = async (
     const effectiveGender = debounced.gender ?? gender;
     const effectiveTargetPerson = debounced.targetPerson ?? targetPerson;
     const effectiveCalendarType = debounced.calendarType ?? calendarType;
+    const effectiveIsLeapMonth = debounced.isLeapMonth ?? isLeapMonth;
 
     if (isSpam) {
-      return res.status(200).json({ error: false, reply: SPAM_REPLY });
+      return res.status(200).json({ error: false, conversationId: sessionUserId, reply: SPAM_REPLY });
     }
 
+    const RESET_PATTERN = /새로\s*봐|다시\s*봐|처음부터|리셋|새로운\s*상담/;
+    if (RESET_PATTERN.test(combinedMessage)) {
+      manualReset(sessionUserId);
+    }
+    const conversationHistory = getConversationHistory(sessionUserId);
+    appendConversationMessage(sessionUserId, "user", combinedMessage);
+    const hasDirectReadingProfile = !!(effectiveBirthDate && effectiveGender);
+    if (!hasDirectReadingProfile) {
+      const intakeResponse = await handleConsultationIntake(sessionUserId, combinedMessage);
+      if (intakeResponse) {
+        touchSession(sessionUserId);
+        appendConversationMessage(sessionUserId, "assistant", intakeResponse.reply);
+        await saveAuthorizedSession(sessionUserId, res);
+        return res.status(200).json({
+          error: false,
+          conversationId: sessionUserId,
+          reply: intakeResponse.reply,
+          collectingProfile: true,
+          intakeStage: intakeResponse.stage,
+          profileReady: intakeResponse.profileReady,
+        });
+      }
+    }
+    const { turnCount, useJeongdan: turnBasedJeongdan } = recordTurn(sessionUserId);
+
+    const context = getConsultationContext(sessionUserId);
+    const storedSubject = context?.intake.stage === "ready" ? context.readingSubject : null;
+    const storedSubjectReady =
+      !!storedSubject?.birth?.date &&
+      !!storedSubject.birth.calendarType &&
+      !!storedSubject.genderForCalculation;
+    const calculationProfile: ChatCalculationProfile | null = hasDirectReadingProfile
+      ? {
+          birthDate: effectiveBirthDate!,
+          birthTime: effectiveBirthTime,
+          gender: effectiveGender!,
+          calendarType: effectiveCalendarType ?? "solar",
+          isLeapMonth: effectiveIsLeapMonth,
+        }
+      : storedSubjectReady
+        ? {
+            birthDate: storedSubject.birth!.date!,
+            birthTime: storedSubject.birth!.time,
+            gender: storedSubject.genderForCalculation!,
+            calendarType: storedSubject.birth!.calendarType!,
+            isLeapMonth: storedSubject.birth!.isLeapMonth,
+            sessionSubject: storedSubject,
+          }
+        : null;
+
     let sajuInfo = { dayPillar: "신비", ohaengSummary: "정령의 기운" };
-    const hasSaju = !!(effectiveBirthDate && effectiveGender);
+    let activeDansiInterpretation: LukimInterpretation | null = null;
+    let relationshipInsight: string | undefined;
+    const hasSaju = calculationProfile !== null;
     const isTodayFortuneRequest = TODAY_FORTUNE_PATTERN.test(combinedMessage.trim());
 
-    if (hasSaju) {
-      const timeStr = effectiveBirthTime || "12:00";
+    if (calculationProfile) {
+      const resolvedBirthDate = await resolveSolarBirthDate({
+        birthDate: calculationProfile.birthDate,
+        birthTime: calculationProfile.birthTime,
+        calendarType: calculationProfile.calendarType,
+        isLeapMonth: calculationProfile.isLeapMonth,
+      });
       const { getSajuDetails } = await import("../services/saju.service");
       const sajuResult = await getSajuDetails(
-        new Date(`${effectiveBirthDate}T${timeStr}`),
-        effectiveGender,
+        resolvedBirthDate.date,
+        calculationProfile.gender,
       );
       const dayPillar = sajuResult.sajuData.pillars.day;
       sajuInfo = {
@@ -215,42 +320,106 @@ export const getMookAFortuneAPI = async (
         ohaengSummary: `일간 ${dayPillar.ganOhaeng}, 일지 ${dayPillar.jiOhaeng}`,
       };
 
+      if (calculationProfile.sessionSubject) {
+        setReadingSubject(sessionUserId, {
+          ...calculationProfile.sessionSubject,
+          birthYearPillar: {
+            basis: "ipchun",
+            gan: sajuResult.sajuData.pillars.year.gan,
+            ji: sajuResult.sajuData.pillars.year.ji,
+            solarBirthDate: resolvedBirthDate.solarBirthDate,
+          },
+        });
+      }
+
+      if (
+        calculationProfile.sessionSubject &&
+        context?.relationshipTarget &&
+        RELATIONSHIP_READING_PATTERN.test(combinedMessage)
+      ) {
+        const { buildRelationshipConsultationInsight } = await import("../services/relationship-consultation.service");
+        const result = await buildRelationshipConsultationInsight({
+          readingSubject: calculationProfile.sessionSubject,
+          relationshipTarget: context.relationshipTarget,
+          readingSubjectPillars: sajuResult.sajuData.pillars,
+        });
+        if (result) {
+          relationshipInsight = result.insight;
+          setRelationshipTarget(sessionUserId, {
+            ...context.relationshipTarget,
+            birthYearPillar: result.targetBirthYearPillar,
+          });
+          console.log(`[관계 상담] 양쪽 출생 흐름 주입 완료 | 상대=${context.relationshipTarget.displayName ?? "상대방"}`);
+        }
+      }
+
+      const storedDansiInterpretationId = getCurrentDansiInterpretationId(sessionUserId);
+      if (storedDansiInterpretationId !== null) {
+        activeDansiInterpretation = getLukimInterpretation(storedDansiInterpretationId);
+      }
+
+      if (!activeDansiInterpretation) {
+        const { calculateDansiResult } = await import("../services/lukim-dansi.service");
+        const dansiResult = calculateDansiResult({
+          gender: calculationProfile.gender,
+          birthYear: {
+            gan: sajuResult.sajuData.pillars.year.gan,
+            ji: sajuResult.sajuData.pillars.year.ji,
+          },
+          referenceDate: new Date(),
+        });
+        if (dansiResult) {
+          activeDansiInterpretation = dansiResult.interpretation;
+          setCurrentDansiInterpretationId(sessionUserId, dansiResult.interpretation.id);
+        }
+      }
+
       if (isTodayFortuneRequest) {
         const todayResult = await getTodayFortune({
           name: "",
-          birthDate: effectiveBirthDate!,
-          gender: effectiveGender!,
-          calendarType: effectiveCalendarType ?? "solar",
-          birthTime: timeStr,
+          birthDate: calculationProfile.birthDate,
+          gender: calculationProfile.gender,
+          calendarType: calculationProfile.calendarType,
+          birthTime: resolvedBirthDate.birthTime,
           birthPlace: "",
+          isLeapMonth: calculationProfile.isLeapMonth,
         });
 
         if (todayResult.lukim?.name && todayResult.lukim?.summary) {
           const { getMookATodayFortuneResponse } = await import("../services/mookA.service");
-          const reply = await getMookATodayFortuneResponse({
-            lukimName: todayResult.lukim.name,
-            lukimSummary: todayResult.lukim.summary,
-            dayPillar: sajuInfo.dayPillar,
-            ohaengSummary: sajuInfo.ohaengSummary,
-            avoid: todayResult.fortune.avoid,
-            lucky: todayResult.fortune.lucky,
-            advice: todayResult.fortune.advice,
-          });
+          const reply = await getMookATodayFortuneResponse(
+            {
+              lukimName: activeDansiInterpretation?.outputName ?? todayResult.lukim.name,
+              lukimSummary: activeDansiInterpretation?.summary ?? todayResult.lukim.summary,
+              dayPillar: sajuInfo.dayPillar,
+              ohaengSummary: sajuInfo.ohaengSummary,
+              avoid: todayResult.fortune.avoid,
+              lucky: todayResult.fortune.lucky,
+              advice: todayResult.fortune.advice,
+            },
+            conversationHistory,
+          );
 
           if (reply) {
-            return res.status(200).json({ error: false, reply, sendFairyImage: true });
+            appendConversationMessage(sessionUserId, "assistant", reply);
+            await saveAuthorizedSession(sessionUserId, res);
+            return res.status(200).json({ error: false, conversationId: sessionUserId, reply, turnCount, sendFairyImage: true });
           }
         }
       }
+    } else {
+      const storedDansiInterpretationId = getCurrentDansiInterpretationId(sessionUserId);
+      if (storedDansiInterpretationId !== null) {
+        activeDansiInterpretation = getLukimInterpretation(storedDansiInterpretationId);
+      }
     }
 
-    // ── 세션 턴 기록 & 무기 결정 ──
-    const sessionUserId = userId ?? "anonymous";
-    const RESET_PATTERN = /새로\s*봐|다시\s*봐|처음부터|리셋|새로운\s*상담/;
-    if (RESET_PATTERN.test(combinedMessage)) {
-      manualReset(sessionUserId);
+    let dansiInsight: string | undefined;
+    if (activeDansiInterpretation) {
+      const { buildDansiInsight } = await import("../services/lukim-dansi.service");
+      dansiInsight = buildDansiInsight(activeDansiInterpretation, combinedMessage);
+      console.log(`[단시점] 상담 바탕 주입 완료 | id=${activeDansiInterpretation.id} | 방향=${activeDansiInterpretation.direction ?? "없음"}`);
     }
-    const { turnCount, useJeongdan: turnBasedJeongdan } = recordTurn(sessionUserId);
 
     const matchedCategories = matchCategories(combinedMessage);
     const categoryNames = matchedCategories.map((c) => c.category);
@@ -262,7 +431,7 @@ export const getMookAFortuneAPI = async (
 
     const categoryTones = matchedCategories.map((c) => c.tone);
 
-    console.log(`[세션] userId=${sessionUserId} | 턴=${turnCount} | 정단=${useJeongdan}${keywordJeongdan ? ` (분야: ${categoryNames.join(", ")})` : ''}${isCategorySwitch ? ` [전환: ${switchedCategories.join(", ")}]` : ''}`);
+    console.log(`[세션] conversationId=${sessionUserId} | 턴=${turnCount} | 정단=${useJeongdan}${keywordJeongdan ? ` (분야: ${categoryNames.join(", ")})` : ''}${isCategorySwitch ? ` [전환: ${switchedCategories.join(", ")}]` : ''}`);
 
     const { getMookAResponse } = await import("../services/mookA.service");
     let seonbongInsight: string | undefined;
@@ -287,7 +456,7 @@ export const getMookAFortuneAPI = async (
     // ── 육임정단 해석 (짝사랑 등 세부 키워드 매칭 시) ──
     let jeongdanInsight: string | undefined;
     const CRUSH_KEYWORDS = /짝사랑|짝사|좋아하는\s*사람|이성으로|친구에서|고백/;
-    if (useJeongdan && categoryNames.includes("연애") && CRUSH_KEYWORDS.test(combinedMessage) && effectiveGender) {
+    if (useJeongdan && categoryNames.includes("연애") && CRUSH_KEYWORDS.test(combinedMessage) && calculationProfile?.gender) {
       try {
         const { interpretCrush } = await import("../data/jeongdan/crush");
         const now = new Date();
@@ -301,7 +470,7 @@ export const getMookAFortuneAPI = async (
             sagwa, samjeon, cheonjibando,
             ilgan: iljinGanji[0],
             ilji: iljinGanji[1] as any,
-            gender: effectiveGender,
+            gender: calculationProfile.gender,
           });
 
           jeongdanInsight = `[육임정단 해석 — 짝사랑]
@@ -326,13 +495,15 @@ export const getMookAFortuneAPI = async (
       }
     }
 
-    const reply = await getMookAResponse(sajuInfo, combinedMessage, hasSaju, effectiveTargetPerson, seonbongInsight, useJeongdan, categoryTones, isCategorySwitch ? switchedCategories : undefined, jeongdanInsight);
+    const reply = await getMookAResponse(sajuInfo, combinedMessage, hasSaju, effectiveTargetPerson, seonbongInsight, useJeongdan, categoryTones, isCategorySwitch ? switchedCategories : undefined, jeongdanInsight, conversationHistory, dansiInsight, relationshipInsight);
 
     if (!reply) {
       return res.status(500).json({ error: true, message: "묵설이가 잠들었나봐요! (AI 응답 없음)" });
     }
 
-    return res.status(200).json({ error: false, reply, turnCount, useJeongdan, categories: categoryNames.length > 0 ? categoryNames : undefined });
+    appendConversationMessage(sessionUserId, "assistant", reply);
+    await saveAuthorizedSession(sessionUserId, res);
+    return res.status(200).json({ error: false, conversationId: sessionUserId, reply, turnCount, useJeongdan, categories: categoryNames.length > 0 ? categoryNames : undefined });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     console.error("[묵설이] 오류:", errMsg);
@@ -344,11 +515,13 @@ export const getMookAFortuneAPI = async (
 // GET /api/session/nudge — 넛지 알림 확인 (프론트 폴링용)
 // ══════════════════════════════════════════════════════════════════════════════
 export const checkNudgeAPI = async (
-  req: Request<ParamsDictionary, any, any, { userId?: string }>,
+  req: Request<ParamsDictionary, any, any, { conversationId?: string; userId?: string }>,
   res: Response,
 ) => {
-  const userId = req.query.userId ?? "anonymous";
-  const hasNudge = consumeNudge(userId as string);
+  const conversationId = getProvidedConversationId(req.query.conversationId, req.query.userId);
+  if (conversationId && !(await restoreAuthorizedSession(conversationId, res))) return;
+  const hasNudge = conversationId ? consumeNudge(conversationId) : false;
+  if (conversationId && hasNudge) await saveAuthorizedSession(conversationId, res);
   return res.status(200).json({
     nudge: hasNudge,
     message: hasNudge ? "...아직 궁금한 거 있어요?" : null,
@@ -361,19 +534,21 @@ export const checkNudgeAPI = async (
 const WAIT_PATTERN = /기다려|나중에|잠깐|이따|좀 있다|있다가|잠시/;
 
 export const nudgeResponseAPI = async (
-  req: Request<ParamsDictionary, any, { userId?: string; message: string }>,
+  req: Request<ParamsDictionary, any, { conversationId?: string; userId?: string; message: string }>,
   res: Response,
 ) => {
-  const userId = req.body.userId ?? "anonymous";
+  const conversationId = getProvidedConversationId(req.body.conversationId, req.body.userId);
   const message = req.body.message ?? "";
+  if (conversationId && !(await restoreAuthorizedSession(conversationId, res))) return;
 
   if (WAIT_PATTERN.test(message)) {
-    handleNudgeResponse(userId, "wait");
+    if (conversationId) handleNudgeResponse(conversationId, "wait");
+    if (conversationId) await saveAuthorizedSession(conversationId, res);
     return res.status(200).json({ error: false, reply: "알겠어요. 기다리고 있을게요.", reset: false });
   }
 
   // "기다려" 류가 아니면 → 대화 이어감 (일반 chat으로 처리)
-  handleNudgeResponse(userId, "continue");
+  if (conversationId) handleNudgeResponse(conversationId, "continue");
   return res.status(200).json({ error: false, continueChat: true });
 };
 
@@ -381,16 +556,78 @@ export const nudgeResponseAPI = async (
 // GET /api/session — 세션 상태 조회
 // ══════════════════════════════════════════════════════════════════════════════
 export const getSessionAPI = async (
-  req: Request<ParamsDictionary, any, any, { userId?: string }>,
+  req: Request<ParamsDictionary, any, any, { conversationId?: string; userId?: string }>,
   res: Response,
 ) => {
-  const userId = req.query.userId ?? "anonymous";
-  const info = getSessionInfo(userId as string);
+  const conversationId = getProvidedConversationId(req.query.conversationId, req.query.userId);
+  if (conversationId && !(await restoreAuthorizedSession(conversationId, res))) return;
+  const info = conversationId ? getSessionInfo(conversationId) : null;
   return res.status(200).json({
     active: !!info,
     turnCount: info?.turnCount ?? 0,
     state: info?.state ?? "none",
+    messageCount: info?.messageCount ?? 0,
+    hasDansi: info?.hasDansi ?? false,
+    hasAccountProfileCandidate: info?.hasAccountProfileCandidate ?? false,
+    hasReadingSubject: info?.hasReadingSubject ?? false,
+    hasRelationshipTarget: info?.hasRelationshipTarget ?? false,
+    intakeStage: info?.intakeStage ?? "idle",
   });
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// POST /api/session/account-profile-candidate — 로그인에서 받은 본인 정보 후보 연결
+// 실제 OAuth 검증 이후 호출되어야 하며, 이 API 자체는 인증을 대신하지 않는다.
+// ══════════════════════════════════════════════════════════════════════════════
+export const linkAccountProfileCandidateAPI = async (
+  req: Request<
+    ParamsDictionary,
+    any,
+    {
+      conversationId?: string;
+      userId?: string;
+      provider: SocialLoginProvider;
+      displayName?: string;
+      birthDate?: string;
+      calendarType?: CalendarType;
+      isLeapMonth?: boolean;
+      gender?: GenderForCalculation;
+    }
+  >,
+  res: Response,
+) => {
+  const conversationId = getProvidedConversationId(req.body.conversationId, req.body.userId);
+  if (!conversationId) {
+    return res.status(400).json({ error: true, message: "conversationId가 필요합니다." });
+  }
+
+  try {
+    if (!(await restoreAuthorizedSession(conversationId, res))) return;
+    const { createAccountProfileCandidate } = await import("../services/account-profile.service");
+    const candidate = createAccountProfileCandidate(req.body);
+    setAccountProfileCandidate(conversationId, candidate);
+    touchSession(conversationId);
+    const { persistAccountCandidateForUser } = await import("../services/persistent-session.service");
+    await persistAccountCandidateForUser(getAuthenticatedUserId(res), candidate);
+    await saveAuthorizedSession(conversationId, res);
+
+    return res.status(200).json({
+      error: false,
+      conversationId,
+      linked: true,
+      candidate: {
+        provider: candidate.socialLoginProvider,
+        hasBirthDate: !!candidate.birth?.date,
+        hasCalendarType: !!candidate.birth?.calendarType,
+        hasGender: !!candidate.genderForCalculation,
+      },
+    });
+  } catch (error) {
+    return res.status(400).json({
+      error: true,
+      message: error instanceof Error ? error.message : "로그인 프로필 정보를 연결할 수 없습니다.",
+    });
+  }
 };
 
 // ══════════════════════════════════════════════════════════════════════════════

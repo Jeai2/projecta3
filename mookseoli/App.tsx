@@ -1,10 +1,11 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform, Animated } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Keyboard, Platform, Animated } from 'react-native';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
+import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // 로컬 테스트: PC IP 주소. 배포 후 Railway URL로 교체
-const API_URL = 'http://192.168.219.101:3001';
+const API_URL = 'http://192.168.219.102:3001';
 
 const COLORS = {
   bg: '#0E0C0A',
@@ -122,17 +123,24 @@ function SplashScreen({ onDone }: { onDone: () => void }) {
 
 const NUDGE_POLL_MS = 60_000; // 60초마다 넛지 확인
 
+function createConversationId(): string {
+  return `app-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
 function ChatScreen() {
+  const insets = useSafeAreaInsets();
+  const [conversationId] = useState(createConversationId);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoadingGreeting, setIsLoadingGreeting] = useState(true);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const nudgeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const checkNudge = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/session/nudge?userId=anonymous`);
+      const res = await fetch(`${API_URL}/api/session/nudge?conversationId=${encodeURIComponent(conversationId)}`);
       const data = await res.json();
       if (data.nudge && data.message) {
         setMessages(prev => [...prev, {
@@ -142,7 +150,7 @@ function ChatScreen() {
         }]);
       }
     } catch { /* 무시 */ }
-  }, []);
+  }, [conversationId]);
 
   // 넛지 폴링 시작/정지
   useEffect(() => {
@@ -184,6 +192,21 @@ function ChatScreen() {
     fetchGreeting();
   }, []);
 
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSubscription = Keyboard.addListener(showEvent, () => {
+      setIsKeyboardVisible(true);
+      requestAnimationFrame(() => flatListRef.current?.scrollToEnd({ animated: true }));
+    });
+    const hideSubscription = Keyboard.addListener(hideEvent, () => setIsKeyboardVisible(false));
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
+
   const send = async (text: string) => {
     if (!text.trim() || isTyping) return;
     const userMsg: Message = { id: Date.now().toString(), role: 'user', text };
@@ -195,7 +218,7 @@ function ChatScreen() {
       const res = await fetch(`${API_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text }),
+        body: JSON.stringify({ conversationId, message: text }),
       });
       const data = await res.json();
       const reply = data.reply ?? '묵설이가 잠깐 자리를 비웠어요. 다시 말해봐요!';
@@ -221,12 +244,14 @@ function ChatScreen() {
         <View style={styles.onlineDot} />
       </View>
 
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <FlatList
           ref={flatListRef}
           data={messages}
           keyExtractor={m => m.id}
           contentContainerStyle={styles.chatArea}
+          keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+          keyboardShouldPersistTaps="handled"
           onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
           ListFooterComponent={
             (isTyping || isLoadingGreeting) ? (
@@ -264,7 +289,7 @@ function ChatScreen() {
           ))}
         </View>
 
-        <View style={styles.inputRow}>
+        <View style={[styles.inputRow, { paddingBottom: isKeyboardVisible ? 11 : Math.max(insets.bottom, 11) }]}>
           <TextInput
             style={styles.input}
             value={input}
@@ -288,7 +313,11 @@ function ChatScreen() {
 
 export default function App() {
   const [showSplash, setShowSplash] = useState(true);
-  return showSplash ? <SplashScreen onDone={() => setShowSplash(false)} /> : <ChatScreen />;
+  return (
+    <SafeAreaProvider>
+      {showSplash ? <SplashScreen onDone={() => setShowSplash(false)} /> : <ChatScreen />}
+    </SafeAreaProvider>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -468,7 +497,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 12,
-    paddingVertical: 11,
+    paddingTop: 11,
     borderTopWidth: 0.5,
     borderColor: COLORS.border,
   },

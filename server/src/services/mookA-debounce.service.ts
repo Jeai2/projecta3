@@ -14,6 +14,7 @@ export interface MookADebounceInput {
   birthTime?: string;
   gender?: "M" | "W";
   calendarType?: "solar" | "lunar";
+  isLeapMonth?: boolean;
   targetPerson?: string;
 }
 
@@ -25,6 +26,7 @@ export interface MookADebounceResult {
   birthTime?: string;
   gender?: "M" | "W";
   calendarType?: "solar" | "lunar";
+  isLeapMonth?: boolean;
   targetPerson?: string;
 }
 
@@ -114,6 +116,7 @@ export function createImmediateResult(input: Omit<MookADebounceInput, "userId">)
     birthTime: input.birthTime,
     gender: input.gender,
     calendarType: input.calendarType,
+    isLeapMonth: input.isLeapMonth,
     targetPerson: input.targetPerson,
   };
 }

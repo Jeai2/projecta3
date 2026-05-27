@@ -7,6 +7,7 @@ import {
   checkNudgeAPI,
   nudgeResponseAPI,
   getSessionAPI,
+  linkAccountProfileCandidateAPI,
 } from "../controllers/fortune.controller";
 
 
@@ -18,6 +19,7 @@ router.post("/lukim", getLukimAPI);
 router.get("/greeting", getGreetingAPI);
 
 router.get("/session", getSessionAPI);
+router.post("/session/account-profile-candidate", linkAccountProfileCandidateAPI);
 router.get("/session/nudge", checkNudgeAPI);
 router.post("/session/nudge-response", nudgeResponseAPI);
 

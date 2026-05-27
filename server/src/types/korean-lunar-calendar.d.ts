@@ -11,9 +11,9 @@ declare module "korean-lunar-calendar" {
     day: number;
   }
   class KoreanLunarCalendar {
-    setSolarDate(year: number, month: number, day: number): void;
+    setSolarDate(year: number, month: number, day: number): boolean;
     getLunarCalendar(): LunarCalendar;
-    setLunarDate(year: number, month: number, day: number, intercalation: boolean): void;
+    setLunarDate(year: number, month: number, day: number, intercalation: boolean): boolean;
     getSolarCalendar(): SolarCalendar;
   }
   export default KoreanLunarCalendar;

@@ -1,0 +1,84 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SocialLoginProvider {
+  kakao
+  naver
+  google
+}
+
+model AppUser {
+  id               String                   @id
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  socialAccounts   SocialAccount[]
+  authSessions     AuthSession[]
+  profileCandidate AccountProfileCandidate?
+  sessions         ConsultationSession[]
+}
+
+model SocialAccount {
+  id                String   @id @default(cuid())
+  userId            String
+  provider          SocialLoginProvider
+  providerAccountId String
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  user              AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model AccountProfileCandidate {
+  userId              String   @id
+  provider            SocialLoginProvider
+  displayName         String?
+  birthDate           String?
+  calendarType        String?
+  isLeapMonth         Boolean?
+  genderForCalculation String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  user                AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ConsultationSession {
+  id             String   @id
+  userId         String
+  snapshot       Json
+  lastActivityAt DateTime
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  user           AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+}
+
+model AuthSession {
+  tokenHash  String   @id
+  userId     String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  lastUsedAt DateTime @default(now())
+  user       AppUser  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model OAuthLoginAttempt {
+  stateHash      String              @id
+  provider       SocialLoginProvider
+  conversationId String
+  expiresAt      DateTime
+  createdAt      DateTime            @default(now())
+
+  @@index([expiresAt])
+}

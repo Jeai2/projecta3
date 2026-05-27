@@ -7,16 +7,20 @@
     "dev": "nodemon src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
+    "@prisma/client": "^6.19.3",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^4.19.2",
-    "korean-lunar-calendar": "^0.3.6"
+    "korean-lunar-calendar": "^0.3.6",
+    "prisma": "^6.19.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",

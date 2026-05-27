@@ -1,4 +1,5 @@
 import { getMookAChatResponse } from "../ai/ai.service";
+import type { ConversationMessage } from "./session.service";
 import fs from "fs";
 import path from "path";
 
@@ -28,6 +29,19 @@ function loadPersona(): string {
 interface MookASajuInput {
   dayPillar: string;
   ohaengSummary: string;
+}
+
+function buildConversationHistoryBlock(history: ConversationMessage[]): string {
+  if (history.length === 0) return "";
+
+  const lines = history.slice(-12).map((message) => {
+    const speaker = message.role === "user" ? "사용자" : "묵설";
+    return `${speaker}: ${message.content}`;
+  });
+
+  return `\n\n[이전 대화 맥락]
+아래는 같은 상담에서 이미 오간 말이다. 사용자의 현재 질문을 이해하고 앞선 흐름을 이어가는 데만 활용해.
+${lines.join("\n")}`;
 }
 
 /** 감정 기복: 짜증·삐침 (스승님 제외) */
@@ -116,9 +130,11 @@ export interface MookATodayFortuneInput {
  * '온화하고 자비로운 아기 선녀' 어조로, 무당보다 위엄 있고 따뜻한 풀이.
  */
 export const getMookATodayFortuneResponse = async (
-  input: MookATodayFortuneInput
+  input: MookATodayFortuneInput,
+  conversationHistory: ConversationMessage[] = [],
 ): Promise<string | null> => {
   const persona = loadPersona();
+  const historyBlock = buildConversationHistoryBlock(conversationHistory);
   const todayFortuneBlock = `[모드: 오늘의 운세 - !오늘운세 | 아기 선녀 페르소나]
 
 지금은 묵설이가 '온화하고 자비로운 아기 선녀'로 변한 순간이야. 무서운 무당이 아니라, 하늘의 기운을 따뜻하게 전해주는 존재로 말해줘.
@@ -164,6 +180,8 @@ export const getMookATodayFortuneResponse = async (
 
 ${todayFortuneBlock}
 
+${historyBlock}
+
 ${EMOTION_BLOCK}
 
 ${OUTPUT_FORMAT_BLOCK}`;
@@ -172,9 +190,14 @@ ${OUTPUT_FORMAT_BLOCK}`;
 };
 
 const WEAPON_DANSI_BLOCK = `[점술 무기 1: 육임단시점 — 가벼운 기운 읽기 (항상 사용)]
-- 가볍고 직관적으로 오늘의 기운을 읽어줘. "오늘 흐름이 이런 느낌이에요."
+- 아래 제공된 육임단시점 자료를 바탕으로 가볍고 직관적으로 현재 흐름을 읽어줘. "지금 흐름이 이런 느낌이에요."
 - 사용자가 말문을 열 수 있게 분위기를 만들어.
 - 반드시 질문으로 끝내서 대화를 이어가.`;
+
+const DANSI_PENDING_BLOCK = `[점술 상태: 육임단시점 미성립]
+이번 상담에는 아직 실제 육임단시점 자료가 세워지지 않았어.
+- 실제 괘나 정해진 기운을 이미 읽은 것처럼 꾸며 말하지 마.
+- 사용자의 고민을 짧게 받아주고, 무엇을 보고 싶은지 확인하는 질문으로 이어가.`;
 
 const WEAPON_JEONGDAN_BLOCK = `[점술 무기 2: 육임정단 — 깊은 기운 읽기 (추가 활성)]
 대화가 무르익었어. 사용자의 고민이 어느 정도 드러난 상태야.
@@ -198,25 +221,35 @@ export const getMookAResponse = async (
   categoryTones: string[] = [],
   switchedCategories?: string[],
   jeongdanInsight?: string,
+  conversationHistory: ConversationMessage[] = [],
+  dansiInsight?: string,
+  relationshipInsight?: string,
 ): Promise<string | null> => {
   const persona = loadPersona();
   const modeBlock = hasSaju ? SAJU_MODE_BLOCK(sajuData) : FREE_CHAT_BLOCK;
   const targetBlock = targetPerson ? `\n\n${TARGET_PERSON_BLOCK(targetPerson)}` : "";
   const seonbongBlock = seonbongInsight ? `\n\n${seonbongInsight}` : "";
-  const weaponBlock = useJeongdan
-    ? `${WEAPON_DANSI_BLOCK}\n\n${WEAPON_JEONGDAN_BLOCK}`
-    : WEAPON_DANSI_BLOCK;
+  const hasJeongdanInsight = useJeongdan && !!jeongdanInsight;
+  const weaponBlock = dansiInsight
+    ? hasJeongdanInsight
+      ? `${WEAPON_DANSI_BLOCK}\n\n${dansiInsight}\n\n${WEAPON_JEONGDAN_BLOCK}`
+      : `${WEAPON_DANSI_BLOCK}\n\n${dansiInsight}`
+    : hasJeongdanInsight
+      ? `${DANSI_PENDING_BLOCK}\n\n${WEAPON_JEONGDAN_BLOCK}`
+      : DANSI_PENDING_BLOCK;
   const toneBlock = categoryTones.length > 0 ? `\n\n${categoryTones.join("\n\n")}` : "";
   const switchBlock = switchedCategories && switchedCategories.length > 0
     ? `\n\n${CATEGORY_SWITCH_BLOCK(switchedCategories)}`
     : "";
   const jeongdanBlock = jeongdanInsight ? `\n\n${jeongdanInsight}` : "";
+  const relationshipBlock = relationshipInsight ? `\n\n${relationshipInsight}` : "";
+  const historyBlock = buildConversationHistoryBlock(conversationHistory);
 
   const systemPrompt = `${persona}
 
-${modeBlock}${targetBlock}${seonbongBlock}
+${modeBlock}${targetBlock}${seonbongBlock}${historyBlock}
 
-${weaponBlock}${toneBlock}${switchBlock}${jeongdanBlock}
+${weaponBlock}${toneBlock}${switchBlock}${jeongdanBlock}${relationshipBlock}
 
 ${EMOTION_BLOCK}
 
