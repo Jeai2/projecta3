@@ -1,4 +1,204 @@
-# projecta3 / 묵설 개발 인수인계
+# projecta3 / 점점점 개발 인수인계
+
+## 2026-05-29 최신 작업 메모
+
+작성 기준일: 2026-05-29  
+현재 작업 폴더: `D:\아티부\projecta3`  
+브랜치 상태: `main...origin/main` 기준, 아래 변경은 아직 커밋 전이다.
+
+### 0. 이번 로컬 이동에서 확인한 환경 이슈
+
+- `mookseoli`는 새 PC에서 `node_modules`가 없으면 VS Code/Codex Problems에 `Cannot use JSX unless the '--jsx' flag is provided.` 같은 오류가 뜰 수 있다.
+- 이 경우 실제 코드 문제가 아니라 의존성/TypeScript 서버 인식 문제일 가능성이 크다.
+- 해결 확인 절차:
+
+```bash
+cd "/d/아티부/projecta3/mookseoli"
+npm install
+npx tsc --noEmit
+```
+
+- 편집기 Problems가 계속 남으면 편집기를 완전히 종료 후 재실행하거나 TypeScript 서버를 재시작한다.
+- 현재 PC의 Expo 앱 API 주소는 `mookseoli/App.tsx`에서 `http://192.168.45.21:3001`로 바꿔둔 상태다. 다음 로컬/네트워크로 이동하면 반드시 새 IPv4 주소로 다시 바꿔야 한다.
+- 서버 실행 시 현재 PC의 Node `v22.16.0`에서는 Prisma Client 로딩에서 `Cannot find module '#main-entry-point'`가 발생했다.
+- 같은 코드가 Node `20.19.5`에서는 정상 로딩되므로, 이 PC에서는 아래 임시 명령으로 서버를 실행했다.
+
+```bash
+cd "/d/아티부/projecta3/server"
+npx --yes node@20.19.5 ./node_modules/ts-node/dist/bin.js src/index.ts
+```
+
+- 이 실행 방식은 `nodemon`이 아니므로 서버 코드를 바꾼 뒤에는 `Ctrl+C` 후 같은 명령으로 재시작해야 한다.
+- 기존 PC로 돌아가면 기존 Node 환경에서는 정상일 수 있다. 이 Prisma 오류는 Git으로 전염되는 코드 변경이 아니라 로컬 Node/Prisma 런타임 조합 문제로 판단했다.
+
+### 1. Gemini 모델 변경
+
+- 기존 `server/src/ai/ai.service.ts`에는 종료된 모델 `gemini-3.1-flash-lite-preview`가 남아 있었다.
+- Google API에서 `404 Not Found`, `This model ... is no longer available`가 발생했다.
+- 사용자의 요청에 따라 `gemini-3.5-flash`로 변경했다.
+- 변경 위치:
+  - `server/src/ai/ai.service.ts`
+- 검증:
+
+```bash
+cd server
+npm run build
+```
+
+### 2. 앱 이름 및 캐릭터 방향 변경
+
+- 앱 이름은 `점점점`으로 결정했다.
+- 기존 사용자 노출 캐릭터명 `묵설`은 폐기 방향이다.
+- 작업 편의를 위해 이전 대화에서는 묵설이라고 불렀지만, 사용자 경험 기준으로는 다음 구조가 최신 기준이다.
+
+```text
+앱 이름: 점점점
+낮 현현: 화선낭자
+밤 현현: 화영낭자
+공통 기술: 선봉문, 무료 윷점, 천음, 육임단시점, 육임정단
+현재 AI API: 테스트 단계에서는 둘 다 Gemini 공통 사용
+추후 방향: 화선은 Gemini, 화영은 GPT처럼 provider 분리 가능
+```
+
+- 화선/화영은 서로 완전히 다른 인물이 아니라 같은 존재의 낮과 밤의 현현이다.
+- 상담 세션 시작 시 정해진 현현은 해당 상담 동안 유지하는 방향이 좋다. 상담 도중 일몰/일출 때문에 갑자기 바뀌면 사용자 혼란이 생길 수 있다.
+
+### 3. 스플래시/아이콘 작업
+
+사용자가 제공한 PNG 자산:
+
+- 낮/Light 원본: `C:\Users\PC\Downloads\jmjmjm.png`
+- 밤/Dark 원본: `C:\Users\PC\Downloads\jmjmjmb.png`
+
+두 파일 모두 투명 PNG이고 크기/구조가 비슷해 시간대별 교체용으로 적합하다.
+
+현재 생성/갱신한 앱 자산:
+
+- `mookseoli/assets/icon.png`
+- `mookseoli/assets/adaptive-icon.png`
+- `mookseoli/assets/splash-icon.png`
+- `mookseoli/assets/favicon.png`
+- `mookseoli/assets/jmjmjm-light-source.png`
+- `mookseoli/assets/jmjmjm-dark-source.png`
+- `mookseoli/assets/splash-light.png`
+- `mookseoli/assets/splash-dark.png`
+
+설정 변경:
+
+- `mookseoli/app.json`
+  - `expo.name`: `점점점`
+  - `expo.slug`: `jmjmjm`
+  - `userInterfaceStyle`: `dark`
+  - 네이티브 스플래시 배경: `#FAF2E9`
+  - Android adaptive icon 배경: `#FAF2E9`
+
+중요 결정:
+
+- 네이티브 스플래시는 정적으로만 동작하므로 항상 밝은 `jmjmjm`/아이보리 배경으로 둔다.
+- 앱 내부 스플래시부터 시간대별 분기를 적용한다.
+- 낮에는 밝은 `jmjmjm`에서 자연스럽게 이어진다.
+- 밤에는 네이티브 밝은 스플래시에서 앱 내부 스플래시로 넘어올 때 화면이 어둠에 물들듯 전환한다.
+
+현재 내부 스플래시 구현:
+
+- `mookseoli/App.tsx`
+- `Aspect = "hwaseon" | "hwayeong"`
+- 낮 기준: `06:00 <= 현재 시간 < 18:00`
+- 밤 기준: 그 외 시간
+- 낮:
+  - 이미지: `splash-light.png`
+  - 이름: `화선낭자`
+  - 부제: `빛의 상담`
+- 밤:
+  - 이미지: `splash-dark.png`
+  - 이름: `화영낭자`
+  - 부제: `그림자의 상담`
+  - 밝은 배경에서 `#110F0C`로 약 0.6초 동안 어두워지는 overlay 애니메이션 적용
+
+테스트를 위해 현재는 밤 모드로 강제 고정되어 있다.
+
+```ts
+const TEST_ASPECT_OVERRIDE: Aspect | null = 'hwayeong';
+```
+
+시간 기준으로 되돌리려면 다음처럼 바꾼다.
+
+```ts
+const TEST_ASPECT_OVERRIDE: Aspect | null = null;
+```
+
+### 4. 현재 4-0 Flow 결정 상태
+
+현재는 인수인계의 `4-0 최신 Flow 명세 확정` 중 `4-0-1 스플래시/첫 진입`을 진행 중이다.
+
+확정/진행한 방향:
+
+```text
+앱 아이콘 터치
+-> 네이티브 스플래시: 밝은 점점점 심볼
+-> 앱 내부 스플래시
+   -> 낮: 화선낭자, 밝은 이미지
+   -> 밤: 화영낭자, 밝은 화면이 어두워지는 전환 후 밤 이미지
+-> 무료 상담 첫 화면
+```
+
+아직 미확정/다음 작업:
+
+- 실제 일출/일몰 계산으로 바꿀지, 06:00~18:00 고정 기준을 유지할지
+- 앱 내부 스플래시 길이와 이탈률 균형
+- 첫 대면 화면에서 바로 입력창을 보여줄지, `말없이 보기` 버튼을 함께 보여줄지
+- 화선/화영 각각의 첫 인사 문구
+- 기존 `묵설이` 텍스트를 사용자 노출 UI에서 점진적으로 제거
+- `/api/chat`에 `aspect`를 보내는 기반 추가
+- 서버에서 aspect별 말투/prompt/provider 분리
+
+### 5. 현재 변경 파일 목록
+
+커밋 전 변경:
+
+- `mookseoli/App.tsx`
+  - API URL이 현재 PC IP로 변경됨
+  - 앱 내부 스플래시를 이미지 기반으로 변경
+  - 화선/화영 aspect 및 테스트 강제 밤 모드 추가
+  - 채팅 헤더가 화선/화영 이름을 표시하도록 변경
+- `mookseoli/app.json`
+  - 앱 이름/slug/스플래시/아이콘 배경 변경
+- `mookseoli/assets/adaptive-icon.png`
+- `mookseoli/assets/favicon.png`
+- `mookseoli/assets/icon.png`
+- `mookseoli/assets/splash-icon.png`
+- `mookseoli/assets/jmjmjm-light-source.png`
+- `mookseoli/assets/jmjmjm-dark-source.png`
+- `mookseoli/assets/splash-light.png`
+- `mookseoli/assets/splash-dark.png`
+- `server/src/ai/ai.service.ts`
+  - Gemini 모델명을 `gemini-3.5-flash`로 변경
+
+검증 완료:
+
+```bash
+cd mookseoli
+npx tsc --noEmit
+
+cd server
+npm run build
+```
+
+### 6. 다음 로컬에서 바로 할 일
+
+1. 이동한 PC에서 `git pull` 후 `npm install`이 필요한지 확인한다.
+2. `mookseoli/App.tsx`의 `API_URL`을 새 PC IPv4 주소로 바꾼다.
+3. 서버가 Node 22에서 Prisma 오류를 내면 Node 20 LTS로 실행한다.
+4. Expo는 assets/app.json 변경 확인을 위해 캐시 초기화로 실행한다.
+
+```bash
+cd "/d/아티부/projecta3/mookseoli"
+npx expo start -c
+```
+
+5. 밤 모드 테스트가 끝나면 `TEST_ASPECT_OVERRIDE`를 `null`로 되돌린다.
+
+---
 
 작성 기준일: 2026-05-25  
 기준 작업 폴더: `D:\projecta3`

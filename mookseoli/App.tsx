@@ -1,23 +1,58 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Keyboard, Platform, Animated } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Keyboard, Platform, Animated, Image } from 'react-native';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // 로컬 테스트: PC IP 주소. 배포 후 Railway URL로 교체
-const API_URL = 'http://192.168.219.102:3001';
+const API_URL = 'http://192.168.45.21:3001';
 
 const COLORS = {
   bg: '#0E0C0A',
+  splashBg: '#FAF2E9',
+  nightBg: '#110F0C',
   bgCard: '#1A1610',
   card: '#1E1A14',
   border: '#2E2518',
   gold: '#C9A96E',
   goldDim: '#7A6040',
+  warmText: '#8B6A3F',
   text: '#F0E6D3',
   textSub: '#5C4E3A',
   white: '#F5EFE6',
 };
+
+type Aspect = 'hwaseon' | 'hwayeong';
+const TEST_ASPECT_OVERRIDE: Aspect | null = 'hwayeong';
+
+const ASPECT_COPY = {
+  hwaseon: {
+    name: '화선낭자',
+    shortName: '화선',
+    subtitle: '빛의 상담',
+    splashImage: require('./assets/splash-light.png'),
+    splashBg: COLORS.splashBg,
+    splashTitleColor: COLORS.warmText,
+    splashSubColor: COLORS.goldDim,
+    statusBar: 'dark' as const,
+  },
+  hwayeong: {
+    name: '화영낭자',
+    shortName: '화영',
+    subtitle: '그림자의 상담',
+    splashImage: require('./assets/splash-dark.png'),
+    splashBg: COLORS.nightBg,
+    splashTitleColor: COLORS.text,
+    splashSubColor: COLORS.gold,
+    statusBar: 'light' as const,
+  },
+};
+
+function resolveAspect(now = new Date()): Aspect {
+  if (TEST_ASPECT_OVERRIDE) return TEST_ASPECT_OVERRIDE;
+  const hour = now.getHours();
+  return hour >= 6 && hour < 18 ? 'hwaseon' : 'hwayeong';
+}
 
 type Message = {
   id: string;
@@ -64,7 +99,8 @@ function TypingDots() {
   );
 }
 
-function SplashScreen({ onDone }: { onDone: () => void }) {
+function SplashScreen({ aspect, onDone }: { aspect: Aspect; onDone: () => void }) {
+  const aspectCopy = ASPECT_COPY[aspect];
   const r1Scale = useRef(new Animated.Value(0.05)).current;
   const r1Opacity = useRef(new Animated.Value(0)).current;
   const r2Scale = useRef(new Animated.Value(0.05)).current;
@@ -74,6 +110,7 @@ function SplashScreen({ onDone }: { onDone: () => void }) {
   const contentOpacity = useRef(new Animated.Value(0)).current;
   const contentY = useRef(new Animated.Value(16)).current;
   const exitOpacity = useRef(new Animated.Value(1)).current;
+  const nightOverlayOpacity = useRef(new Animated.Value(aspect === 'hwayeong' ? 0 : 1)).current;
 
   const makeRipple = (scale: Animated.Value, opacity: Animated.Value, delay: number) =>
     Animated.sequence([
@@ -89,6 +126,9 @@ function SplashScreen({ onDone }: { onDone: () => void }) {
 
   useEffect(() => {
     Animated.sequence([
+      aspect === 'hwayeong'
+        ? Animated.timing(nightOverlayOpacity, { toValue: 1, duration: 620, useNativeDriver: true })
+        : Animated.delay(0),
       Animated.parallel([
         makeRipple(r1Scale, r1Opacity, 0),
         makeRipple(r2Scale, r2Opacity, 340),
@@ -104,18 +144,24 @@ function SplashScreen({ onDone }: { onDone: () => void }) {
   }, []);
 
   return (
-    <Animated.View style={[styles.splash, { opacity: exitOpacity }]}>
+    <Animated.View style={[styles.splash, { backgroundColor: COLORS.splashBg, opacity: exitOpacity }]}>
+      <StatusBar style={aspectCopy.statusBar} />
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          StyleSheet.absoluteFill,
+          { backgroundColor: aspectCopy.splashBg, opacity: nightOverlayOpacity },
+        ]}
+      />
       <View style={styles.rippleContainer}>
         <Animated.View style={[styles.ripple, { opacity: r1Opacity, transform: [{ scale: r1Scale }] }]} />
         <Animated.View style={[styles.ripple, { opacity: r2Opacity, transform: [{ scale: r2Scale }] }]} />
         <Animated.View style={[styles.ripple, { opacity: r3Opacity, transform: [{ scale: r3Scale }] }]} />
       </View>
       <Animated.View style={{ opacity: contentOpacity, transform: [{ translateY: contentY }], alignItems: 'center' }}>
-        <View style={styles.splashAvatar}>
-          <Text style={styles.splashAvatarText}>묵</Text>
-        </View>
-        <Text style={styles.splashTitle}>오늘의 점</Text>
-        <Text style={styles.splashSub}>묵설이와 함께하는 육임 점술</Text>
+        <Image source={aspectCopy.splashImage} style={styles.splashLogo} />
+        <Text style={[styles.splashTitle, { color: aspectCopy.splashTitleColor }]}>점점점</Text>
+        <Text style={[styles.splashSub, { color: aspectCopy.splashSubColor }]}>{aspectCopy.shortName}</Text>
       </Animated.View>
     </Animated.View>
   );
@@ -127,7 +173,8 @@ function createConversationId(): string {
   return `app-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
-function ChatScreen() {
+function ChatScreen({ aspect }: { aspect: Aspect }) {
+  const aspectCopy = ASPECT_COPY[aspect];
   const insets = useSafeAreaInsets();
   const [conversationId] = useState(createConversationId);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -238,8 +285,8 @@ function ChatScreen() {
           <Text style={styles.avatarText}>묵</Text>
         </View>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerName}>묵설이</Text>
-          <Text style={styles.headerSub}>육임 점술</Text>
+          <Text style={styles.headerName}>{aspectCopy.name}</Text>
+          <Text style={styles.headerSub}>{aspectCopy.subtitle}</Text>
         </View>
         <View style={styles.onlineDot} />
       </View>
@@ -313,9 +360,10 @@ function ChatScreen() {
 
 export default function App() {
   const [showSplash, setShowSplash] = useState(true);
+  const [aspect] = useState(resolveAspect);
   return (
     <SafeAreaProvider>
-      {showSplash ? <SplashScreen onDone={() => setShowSplash(false)} /> : <ChatScreen />}
+      {showSplash ? <SplashScreen aspect={aspect} onDone={() => setShowSplash(false)} /> : <ChatScreen aspect={aspect} />}
     </SafeAreaProvider>
   );
 }
@@ -324,7 +372,6 @@ const styles = StyleSheet.create({
   // Splash
   splash: {
     flex: 1,
-    backgroundColor: COLORS.bg,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -341,34 +388,23 @@ const styles = StyleSheet.create({
     height: 270,
     borderRadius: 135,
     borderWidth: 1,
-    borderColor: COLORS.gold,
+    borderColor: 'rgba(201, 169, 110, 0.45)',
   },
-  splashAvatar: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    borderWidth: 1,
-    borderColor: COLORS.gold,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 22,
-  },
-  splashAvatarText: {
-    color: COLORS.gold,
-    fontSize: 24,
-    fontWeight: '300',
-    letterSpacing: 1,
+  splashLogo: {
+    width: 132,
+    height: 132,
+    marginBottom: 18,
   },
   splashTitle: {
     fontSize: 22,
     fontWeight: '300',
-    color: COLORS.text,
+    color: COLORS.warmText,
     marginBottom: 8,
     letterSpacing: 4,
   },
   splashSub: {
     fontSize: 11,
-    color: COLORS.textSub,
+    color: COLORS.goldDim,
     letterSpacing: 1.5,
   },
 
