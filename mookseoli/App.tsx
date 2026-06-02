@@ -1,11 +1,11 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Keyboard, Platform, Animated, Image } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Keyboard, Platform, Animated, Image, ImageBackground } from 'react-native';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // 로컬 테스트: PC IP 주소. 배포 후 Railway URL로 교체
-const API_URL = 'http://192.168.45.21:3001';
+const API_URL = 'http://192.168.219.102:3001';
 
 const COLORS = {
   bg: '#0E0C0A',
@@ -23,27 +23,39 @@ const COLORS = {
 };
 
 type Aspect = 'hwaseon' | 'hwayeong';
-const TEST_ASPECT_OVERRIDE: Aspect | null = 'hwayeong';
+const TEST_ASPECT_OVERRIDE: Aspect | null = null;
 
 const ASPECT_COPY = {
   hwaseon: {
     name: '화선낭자',
     shortName: '화선',
     subtitle: '빛의 상담',
+    appBg: '#F8EBD8',
     splashImage: require('./assets/splash-light.png'),
     splashBg: COLORS.splashBg,
     splashTitleColor: COLORS.warmText,
     splashSubColor: COLORS.goldDim,
+    entranceImage: require('./assets/entrance-hwaseon.png'),
+    entranceOverlay: 'rgba(255, 238, 205, 0.08)',
+    entranceButtonBg: 'rgba(255, 248, 235, 0.72)',
+    entranceButtonBorder: 'rgba(139, 106, 63, 0.28)',
+    entranceButtonText: '#4F3821',
     statusBar: 'dark' as const,
   },
   hwayeong: {
     name: '화영낭자',
     shortName: '화영',
     subtitle: '그림자의 상담',
+    appBg: '#050912',
     splashImage: require('./assets/splash-dark.png'),
     splashBg: COLORS.nightBg,
     splashTitleColor: COLORS.text,
     splashSubColor: COLORS.gold,
+    entranceImage: require('./assets/entrance-hwayeong.png'),
+    entranceOverlay: 'rgba(4, 8, 18, 0.18)',
+    entranceButtonBg: 'rgba(10, 12, 18, 0.62)',
+    entranceButtonBorder: 'rgba(201, 169, 110, 0.34)',
+    entranceButtonText: '#F0E6D3',
     statusBar: 'light' as const,
   },
 };
@@ -138,8 +150,7 @@ function SplashScreen({ aspect, onDone }: { aspect: Aspect; onDone: () => void }
         Animated.timing(contentOpacity, { toValue: 1, duration: 520, useNativeDriver: true }),
         Animated.timing(contentY, { toValue: 0, duration: 520, useNativeDriver: true }),
       ]),
-      Animated.delay(1500),
-      Animated.timing(exitOpacity, { toValue: 0, duration: 480, useNativeDriver: true }),
+      Animated.delay(900),
     ]).start(onDone);
   }, []);
 
@@ -164,6 +175,53 @@ function SplashScreen({ aspect, onDone }: { aspect: Aspect; onDone: () => void }
         <Text style={[styles.splashSub, { color: aspectCopy.splashSubColor }]}>{aspectCopy.shortName}</Text>
       </Animated.View>
     </Animated.View>
+  );
+}
+
+function EntranceScreen({ aspect, onEnter }: { aspect: Aspect; onEnter: () => void }) {
+  const aspectCopy = ASPECT_COPY[aspect];
+  const insets = useSafeAreaInsets();
+  const buttonOpacity = useRef(new Animated.Value(0)).current;
+  const buttonY = useRef(new Animated.Value(10)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(buttonOpacity, { toValue: 1, duration: 520, useNativeDriver: true }),
+      Animated.timing(buttonY, { toValue: 0, duration: 520, useNativeDriver: true }),
+    ]).start();
+  }, []);
+
+  return (
+    <View style={[styles.entrance, { backgroundColor: aspectCopy.appBg }]}>
+      <StatusBar style={aspectCopy.statusBar} />
+      <ImageBackground source={aspectCopy.entranceImage} style={styles.entranceImage} resizeMode="cover">
+        <View style={[styles.entranceOverlay, { backgroundColor: aspectCopy.entranceOverlay }]} />
+        <Animated.View
+          style={[
+            styles.entranceActionWrap,
+            {
+              paddingBottom: Math.max(insets.bottom + 28, 42),
+              opacity: buttonOpacity,
+              transform: [{ translateY: buttonY }],
+            },
+          ]}
+        >
+          <TouchableOpacity
+            activeOpacity={0.82}
+            onPress={onEnter}
+            style={[
+              styles.entranceButton,
+              {
+                backgroundColor: aspectCopy.entranceButtonBg,
+                borderColor: aspectCopy.entranceButtonBorder,
+              },
+            ]}
+          >
+            <Text style={[styles.entranceButtonText, { color: aspectCopy.entranceButtonText }]}>들어간다</Text>
+          </TouchableOpacity>
+        </Animated.View>
+      </ImageBackground>
+    </View>
   );
 }
 
@@ -226,7 +284,7 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
   useEffect(() => {
     const fetchGreeting = async () => {
       try {
-        const res = await fetch(`${API_URL}/api/greeting`);
+        const res = await fetch(`${API_URL}/api/greeting?aspect=${aspect}`);
         const data = await res.json();
         const text = data.greeting ?? '오셨어요?';
         setMessages([{ id: '0', role: 'mook', text }]);
@@ -265,7 +323,7 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
       const res = await fetch(`${API_URL}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ conversationId, message: text }),
+        body: JSON.stringify({ conversationId, message: text, aspect }),
       });
       const data = await res.json();
       const reply = data.reply ?? '묵설이가 잠깐 자리를 비웠어요. 다시 말해봐요!';
@@ -359,16 +417,25 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
 }
 
 export default function App() {
-  const [showSplash, setShowSplash] = useState(true);
+  const [phase, setPhase] = useState<'splash' | 'entrance' | 'chat'>('splash');
   const [aspect] = useState(resolveAspect);
+  const aspectCopy = ASPECT_COPY[aspect];
   return (
     <SafeAreaProvider>
-      {showSplash ? <SplashScreen aspect={aspect} onDone={() => setShowSplash(false)} /> : <ChatScreen aspect={aspect} />}
+      <View style={[styles.appRoot, { backgroundColor: aspectCopy.appBg }]}>
+        {phase === 'splash' && <SplashScreen aspect={aspect} onDone={() => setPhase('entrance')} />}
+        {phase === 'entrance' && <EntranceScreen aspect={aspect} onEnter={() => setPhase('chat')} />}
+        {phase === 'chat' && <ChatScreen aspect={aspect} />}
+      </View>
     </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
+  appRoot: {
+    flex: 1,
+  },
+
   // Splash
   splash: {
     flex: 1,
@@ -406,6 +473,35 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: COLORS.goldDim,
     letterSpacing: 1.5,
+  },
+  entrance: {
+    flex: 1,
+    backgroundColor: COLORS.bg,
+  },
+  entranceImage: {
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
+  entranceOverlay: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  entranceActionWrap: {
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  entranceButton: {
+    minWidth: 132,
+    minHeight: 46,
+    borderWidth: 1,
+    borderRadius: 23,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 28,
+  },
+  entranceButtonText: {
+    fontSize: 15,
+    fontWeight: '400',
+    letterSpacing: 0.5,
   },
 
   // Chat
