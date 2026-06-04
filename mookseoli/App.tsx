@@ -5,7 +5,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // 로컬 테스트: PC IP 주소. 배포 후 Railway URL로 교체
-const API_URL = 'http://192.168.219.102:3001';
+const API_URL = 'http://192.168.45.21:3001';
 
 const COLORS = {
   bg: '#0E0C0A',
@@ -29,13 +29,14 @@ const ASPECT_COPY = {
   hwaseon: {
     name: '화선낭자',
     shortName: '화선',
-    subtitle: '빛의 상담',
+    subtitle: '낮에 열림',
+    avatarImage: require('./assets/aspects/hwaseon/avatar.png'),
     appBg: '#F8EBD8',
-    splashImage: require('./assets/splash-light.png'),
+    splashImage: require('./assets/aspects/hwaseon/splash.png'),
     splashBg: COLORS.splashBg,
     splashTitleColor: COLORS.warmText,
     splashSubColor: COLORS.goldDim,
-    entranceImage: require('./assets/entrance-hwaseon.png'),
+    entranceImage: require('./assets/aspects/hwaseon/entrance.png'),
     entranceOverlay: 'rgba(255, 238, 205, 0.08)',
     entranceButtonBg: 'rgba(255, 248, 235, 0.72)',
     entranceButtonBorder: 'rgba(139, 106, 63, 0.28)',
@@ -45,13 +46,14 @@ const ASPECT_COPY = {
   hwayeong: {
     name: '화영낭자',
     shortName: '화영',
-    subtitle: '그림자의 상담',
+    subtitle: '밤에 열림',
+    avatarImage: require('./assets/aspects/hwayeong/avatar.png'),
     appBg: '#050912',
-    splashImage: require('./assets/splash-dark.png'),
+    splashImage: require('./assets/aspects/hwayeong/splash.png'),
     splashBg: COLORS.nightBg,
     splashTitleColor: COLORS.text,
     splashSubColor: COLORS.gold,
-    entranceImage: require('./assets/entrance-hwayeong.png'),
+    entranceImage: require('./assets/aspects/hwayeong/entrance.png'),
     entranceOverlay: 'rgba(4, 8, 18, 0.18)',
     entranceButtonBg: 'rgba(10, 12, 18, 0.62)',
     entranceButtonBorder: 'rgba(201, 169, 110, 0.34)',
@@ -70,10 +72,131 @@ type Message = {
   id: string;
   role: 'mook' | 'user';
   text: string;
+  kind?: 'normal' | 'defense';
+  defenseType?: DefenseType;
+  defenseLocked?: boolean;
 };
 
+type DefenseType = 'vague' | 'laugh' | 'test' | 'attack' | 'unsafe' | 'return_intent';
+
+type ChatResponse = {
+  reply?: string;
+  defense?: boolean;
+  defenseType?: DefenseType;
+  defenseLocked?: boolean;
+};
 
 const QUICK = ['오늘의 운세', '점 봐주세요', '이직 고민'];
+const MAX_REPLY_BUBBLES = 4;
+const MAX_REPLY_BUBBLE_CHARS = 96;
+const MAX_DEFENSE_BUBBLES = 2;
+
+function wait(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function splitLongSentence(sentence: string, maxChars: number): string[] {
+  const chunks: string[] = [];
+  let remaining = sentence.trim();
+
+  while (remaining.length > maxChars) {
+    const slice = remaining.slice(0, maxChars + 1);
+    const breakAt = Math.max(
+      slice.lastIndexOf(' '),
+      slice.lastIndexOf(','),
+      slice.lastIndexOf('，'),
+      slice.lastIndexOf('、')
+    );
+    const cut = breakAt > 28 ? breakAt + 1 : maxChars;
+    chunks.push(remaining.slice(0, cut).trim());
+    remaining = remaining.slice(cut).trim();
+  }
+
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+function splitReplyIntoBubbles(reply: string): string[] {
+  const normalized = reply.replace(/\r/g, '').trim();
+  if (!normalized) return [];
+  if (normalized.length <= MAX_REPLY_BUBBLE_CHARS) return [normalized];
+
+  const sentenceMatches = normalized.match(/[^.!?。！？…\n]+[.!?。！？…]*/g) ?? [normalized];
+  const sentences = sentenceMatches
+    .map(part => part.trim())
+    .filter(Boolean)
+    .flatMap(part => splitLongSentence(part, MAX_REPLY_BUBBLE_CHARS));
+
+  const bubbles: string[] = [];
+  for (const sentence of sentences) {
+    const last = bubbles[bubbles.length - 1];
+    if (last && `${last} ${sentence}`.length <= MAX_REPLY_BUBBLE_CHARS) {
+      bubbles[bubbles.length - 1] = `${last} ${sentence}`;
+    } else {
+      bubbles.push(sentence);
+    }
+  }
+
+  if (bubbles.length <= MAX_REPLY_BUBBLES) return bubbles;
+
+  return [
+    ...bubbles.slice(0, MAX_REPLY_BUBBLES - 1),
+    bubbles.slice(MAX_REPLY_BUBBLES - 1).join(' '),
+  ];
+}
+
+function splitDefenseIntoBubbles(reply: string): string[] {
+  const chunks = splitReplyIntoBubbles(reply);
+  if (chunks.length <= MAX_DEFENSE_BUBBLES) return chunks;
+
+  return [
+    ...chunks.slice(0, MAX_DEFENSE_BUBBLES - 1),
+    chunks.slice(MAX_DEFENSE_BUBBLES - 1).join(' '),
+  ];
+}
+
+function getReplyBubbleDelay(aspect: Aspect, index: number): number {
+  const base = aspect === 'hwayeong' ? 560 : 380;
+  const step = aspect === 'hwayeong' ? 130 : 90;
+  return base + index * step;
+}
+
+function getDefenseBubbleDelay(aspect: Aspect, index: number, locked?: boolean): number {
+  const base = locked ? 720 : aspect === 'hwayeong' ? 620 : 460;
+  const step = aspect === 'hwayeong' ? 160 : 110;
+  return base + index * step;
+}
+
+function getInputPlaceholder(aspect: Aspect, defenseLocked: boolean): string {
+  if (defenseLocked) {
+    return aspect === 'hwayeong'
+      ? '진짜 질문을 정확히 적어주세요'
+      : '궁금한 걸 한 문장으로 적어주세요';
+  }
+
+  return `${ASPECT_COPY[aspect].shortName}에게 물어보세요`;
+}
+
+function getDefenseLabel(type?: DefenseType, locked?: boolean): string {
+  if (locked) return '상담 흐름 일시 정지';
+
+  switch (type) {
+    case 'laugh':
+      return '질문 대기';
+    case 'vague':
+      return '질문 확인';
+    case 'test':
+      return '상담 기준';
+    case 'attack':
+      return '대화 온도 조절';
+    case 'unsafe':
+      return '안전 경계';
+    case 'return_intent':
+      return '복귀 확인';
+    default:
+      return '상담 기준';
+  }
+}
 
 
 function TypingDots() {
@@ -239,6 +362,7 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
   const [isLoadingGreeting, setIsLoadingGreeting] = useState(true);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [defenseLocked, setDefenseLocked] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const flatListRef = useRef<FlatList>(null);
   const nudgeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -325,9 +449,34 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversationId, message: text, aspect }),
       });
-      const data = await res.json();
-      const reply = data.reply ?? '묵설이가 잠깐 자리를 비웠어요. 다시 말해봐요!';
-      setMessages(prev => [...prev, { id: Date.now().toString() + 'm', role: 'mook', text: reply }]);
+      const data = await res.json() as ChatResponse;
+      const reply = data.reply ?? '잠깐 자리를 비웠어요. 다시 말해봐요.';
+      const isDefense = !!data.defense;
+      const chunks = isDefense ? splitDefenseIntoBubbles(reply) : splitReplyIntoBubbles(reply);
+      if (isDefense) {
+        setDefenseLocked(!!data.defenseLocked);
+        await wait(data.defenseLocked ? 380 : 220);
+      } else {
+        setDefenseLocked(false);
+      }
+
+      for (let i = 0; i < chunks.length; i += 1) {
+        if (i > 0) {
+          await wait(
+            isDefense
+              ? getDefenseBubbleDelay(aspect, i, data.defenseLocked)
+              : getReplyBubbleDelay(aspect, i)
+          );
+        }
+        setMessages(prev => [...prev, {
+          id: `${Date.now()}m${i}`,
+          role: 'mook',
+          text: chunks[i],
+          kind: isDefense ? 'defense' : 'normal',
+          defenseType: data.defenseType,
+          defenseLocked: data.defenseLocked,
+        }]);
+      }
     } catch {
       setMessages(prev => [...prev, { id: Date.now().toString() + 'm', role: 'mook', text: '서버 연결이 안 돼요. 잠시 후 다시 시도해봐요!' }]);
     } finally {
@@ -339,9 +488,6 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
     <View style={styles.container}>
       <StatusBar style="light" />
       <View style={styles.header}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>묵</Text>
-        </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.headerName}>{aspectCopy.name}</Text>
           <Text style={styles.headerSub}>{aspectCopy.subtitle}</Text>
@@ -362,7 +508,7 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
             (isTyping || isLoadingGreeting) ? (
               <View style={styles.rowMook}>
                 <View style={styles.avatarSm}>
-                  <Text style={styles.avatarSmText}>묵</Text>
+                  <Image source={aspectCopy.avatarImage} style={styles.avatarSmImage} />
                 </View>
                 <View style={[styles.bubble, styles.bubbleMook]}>
                   <TypingDots />
@@ -370,20 +516,44 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
               </View>
             ) : null
           }
-          renderItem={({ item }) => (
-            <View style={item.role === 'user' ? styles.rowUser : styles.rowMook}>
-              {item.role === 'mook' && (
-                <View style={styles.avatarSm}>
-                  <Text style={styles.avatarSmText}>묵</Text>
+          renderItem={({ item }) => {
+            const isDefense = item.kind === 'defense';
+            return (
+              <View style={item.role === 'user' ? styles.rowUser : styles.rowMook}>
+                {item.role === 'mook' && (
+                  <View style={[styles.avatarSm, isDefense && styles.avatarDefense]}>
+                    <Image source={aspectCopy.avatarImage} style={styles.avatarSmImage} />
+                  </View>
+                )}
+                <View
+                  style={[
+                    styles.bubble,
+                    item.role === 'user'
+                      ? styles.bubbleUser
+                      : isDefense
+                        ? styles.bubbleDefense
+                        : styles.bubbleMook,
+                    item.defenseLocked && styles.bubbleDefenseLocked,
+                  ]}
+                >
+                  {isDefense && (
+                    <Text style={styles.defenseLabel}>
+                      {getDefenseLabel(item.defenseType, item.defenseLocked)}
+                    </Text>
+                  )}
+                  <Text
+                    style={[
+                      styles.bubbleText,
+                      item.role === 'user' && { color: COLORS.bg },
+                      isDefense && styles.bubbleDefenseText,
+                    ]}
+                  >
+                    {item.text}
+                  </Text>
                 </View>
-              )}
-              <View style={[styles.bubble, item.role === 'user' ? styles.bubbleUser : styles.bubbleMook]}>
-                <Text style={[styles.bubbleText, item.role === 'user' && { color: COLORS.bg }]}>
-                  {item.text}
-                </Text>
               </View>
-            </View>
-          )}
+            );
+          }}
         />
 
         <View style={styles.quickWrap}>
@@ -399,7 +569,7 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
             style={styles.input}
             value={input}
             onChangeText={setInput}
-            placeholder="묵설이에게 물어보세요"
+            placeholder={getInputPlaceholder(aspect, defenseLocked)}
             placeholderTextColor={COLORS.textSub}
             onSubmitEditing={() => send(input)}
           />
@@ -512,26 +682,11 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
     paddingHorizontal: 18,
     paddingTop: 56,
     paddingBottom: 14,
     borderBottomWidth: 0.5,
     borderColor: COLORS.border,
-  },
-  avatar: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    borderWidth: 1,
-    borderColor: COLORS.gold,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  avatarText: {
-    color: COLORS.gold,
-    fontSize: 13,
-    fontWeight: '300',
   },
   headerName: {
     fontSize: 15,
@@ -560,7 +715,7 @@ const styles = StyleSheet.create({
   rowMook: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    gap: 8,
+    gap: 10,
     marginBottom: 6,
   },
   rowUser: {
@@ -569,18 +724,21 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   avatarSm: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     borderWidth: 0.5,
     borderColor: COLORS.goldDim,
     alignItems: 'center',
     justifyContent: 'center',
+    overflow: 'hidden',
   },
-  avatarSmText: {
-    color: COLORS.goldDim,
-    fontSize: 8,
-    fontWeight: '300',
+  avatarDefense: {
+    borderColor: COLORS.gold,
+  },
+  avatarSmImage: {
+    width: '100%',
+    height: '100%',
   },
   bubble: {
     maxWidth: '76%',
@@ -594,6 +752,16 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
     borderBottomLeftRadius: 3,
   },
+  bubbleDefense: {
+    backgroundColor: 'rgba(201, 169, 110, 0.08)',
+    borderWidth: 0.8,
+    borderColor: 'rgba(201, 169, 110, 0.5)',
+    borderBottomLeftRadius: 3,
+  },
+  bubbleDefenseLocked: {
+    backgroundColor: 'rgba(122, 96, 64, 0.14)',
+    borderColor: 'rgba(201, 169, 110, 0.72)',
+  },
   bubbleUser: {
     backgroundColor: COLORS.gold,
     borderBottomRightRadius: 3,
@@ -602,6 +770,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.text,
     lineHeight: 21,
+  },
+  bubbleDefenseText: {
+    color: '#F5E7C8',
+  },
+  defenseLabel: {
+    fontSize: 10,
+    color: COLORS.gold,
+    letterSpacing: 0.5,
+    marginBottom: 5,
   },
 
   quickWrap: {

@@ -23,6 +23,15 @@ export interface ConversationMessage {
   createdAt: number;
 }
 
+export type DefenseIncidentType = "vague" | "laugh" | "test" | "attack" | "unsafe" | "return_intent";
+
+export interface DefenseStatus {
+  count: number;
+  locked: boolean;
+  lastIncidentType: DefenseIncidentType | null;
+  updatedAt: number | null;
+}
+
 interface Session {
   turnCount: number;
   state: SessionState;
@@ -33,6 +42,7 @@ interface Session {
   previousCategories: string[];
   currentJeomsi: string | null; // 다이스로 결정된 현재 시진 (null = 실시간 사용)
   currentDansiInterpretationId: number | null;
+  defense: DefenseStatus;
   consultation: ConsultationContext;
   messages: ConversationMessage[];
 }
@@ -45,6 +55,7 @@ export interface PersistedSessionSnapshot {
   previousCategories: string[];
   currentJeomsi: string | null;
   currentDansiInterpretationId: number | null;
+  defense?: DefenseStatus;
   consultation: ConsultationContext;
   messages: ConversationMessage[];
 }
@@ -62,6 +73,12 @@ function createSession(): Session {
     previousCategories: [],
     currentJeomsi: null,
     currentDansiInterpretationId: null,
+    defense: {
+      count: 0,
+      locked: false,
+      lastIncidentType: null,
+      updatedAt: null,
+    },
     consultation: createEmptyConsultationContext(),
     messages: [],
   };
@@ -138,10 +155,12 @@ export function getSessionInfo(userId: string): {
   state: SessionState;
   messageCount: number;
   hasDansi: boolean;
-  hasAccountProfileCandidate: boolean;
+    hasAccountProfileCandidate: boolean;
   hasReadingSubject: boolean;
   hasRelationshipTarget: boolean;
   intakeStage: ConsultationIntakeStage;
+  defenseCount: number;
+  defenseLocked: boolean;
 } | null {
   const session = sessions.get(userId);
   if (!session) return null;
@@ -154,6 +173,8 @@ export function getSessionInfo(userId: string): {
     hasReadingSubject: session.consultation.readingSubject !== null,
     hasRelationshipTarget: session.consultation.relationshipTarget !== null,
     intakeStage: session.consultation.intake.stage,
+    defenseCount: session.defense.count,
+    defenseLocked: session.defense.locked,
   };
 }
 
@@ -271,6 +292,7 @@ export function exportSessionSnapshot(userId: string): PersistedSessionSnapshot 
     previousCategories: [...session.previousCategories],
     currentJeomsi: session.currentJeomsi,
     currentDansiInterpretationId: session.currentDansiInterpretationId,
+    defense: { ...session.defense },
     consultation: cloneConsultation(session.consultation),
     messages: session.messages.map((message) => ({ ...message })),
   };
@@ -289,6 +311,14 @@ export function restoreSessionSnapshot(userId: string, snapshot: PersistedSessio
     previousCategories: [...snapshot.previousCategories],
     currentJeomsi: snapshot.currentJeomsi,
     currentDansiInterpretationId: snapshot.currentDansiInterpretationId,
+    defense: snapshot.defense
+      ? { ...snapshot.defense }
+      : {
+          count: 0,
+          locked: false,
+          lastIncidentType: null,
+          updatedAt: null,
+        },
     consultation: cloneConsultation(snapshot.consultation),
     messages: snapshot.messages
       .slice(-MAX_CONVERSATION_MESSAGES)
@@ -394,6 +424,35 @@ export function getPreviousCategories(userId: string): string[] {
 
 export function manualReset(userId: string): void {
   resetSession(userId);
+}
+
+export function getDefenseStatus(userId: string): DefenseStatus {
+  return { ...ensureSession(userId).defense };
+}
+
+export function recordDefenseIncident(
+  userId: string,
+  type: DefenseIncidentType,
+): DefenseStatus {
+  const session = ensureSession(userId);
+  session.defense.count += 1;
+  session.defense.locked = session.defense.count >= 3;
+  session.defense.lastIncidentType = type;
+  session.defense.updatedAt = Date.now();
+  touchSession(userId);
+  return { ...session.defense };
+}
+
+export function releaseDefense(userId: string): DefenseStatus {
+  const session = ensureSession(userId);
+  session.defense = {
+    count: 0,
+    locked: false,
+    lastIncidentType: null,
+    updatedAt: Date.now(),
+  };
+  touchSession(userId);
+  return { ...session.defense };
 }
 
 export function setCurrentJeomsi(userId: string, jeomsi: string): void {

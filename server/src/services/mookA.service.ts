@@ -1,28 +1,33 @@
 import { getMookAChatResponse } from "../ai/ai.service";
+import { ASPECT_CONFIG, resolveAspect } from "../aspects/aspect.config";
+import type { ConsultationAspect } from "../aspects/aspect.types";
 import type { ConversationMessage } from "./session.service";
 import fs from "fs";
 import path from "path";
 
-let cachedPersona: string | null = null;
+const cachedAspectPersonas: Partial<Record<ConsultationAspect, string>> = {};
 
-function loadPersona(): string {
-  if (cachedPersona) return cachedPersona;
+function loadPersona(aspectInput: ConsultationAspect): string {
+  const aspect = resolveAspect(aspectInput);
+  const cached = cachedAspectPersonas[aspect];
+  if (cached) return cached;
 
   const candidates = [
-    path.join(__dirname, "../ai/mookA_persona.md"),
-    path.resolve(__dirname, "../../src/ai/mookA_persona.md"),
+    path.join(__dirname, "../aspects", aspect, "persona.md"),
+    path.resolve(__dirname, "../../src/aspects", aspect, "persona.md"),
   ];
 
   for (const p of candidates) {
     if (fs.existsSync(p)) {
-      cachedPersona = fs.readFileSync(p, "utf-8");
-      console.log("[MookA] 페르소나 로드 성공:", p);
-      return cachedPersona;
+      const persona = fs.readFileSync(p, "utf-8");
+      cachedAspectPersonas[aspect] = persona;
+      console.log(`[MookA] ${aspect} 페르소나 로드 성공:`, p);
+      return persona;
     }
   }
 
   throw new Error(
-    `[MookA] mookA_persona.md를 찾을 수 없습니다. 시도한 경로: ${candidates.join(", ")}`
+    `[MookA] ${aspect} persona.md를 찾을 수 없습니다. 시도한 경로: ${candidates.join(", ")}`
   );
 }
 
@@ -35,7 +40,7 @@ function buildConversationHistoryBlock(history: ConversationMessage[]): string {
   if (history.length === 0) return "";
 
   const lines = history.slice(-12).map((message) => {
-    const speaker = message.role === "user" ? "사용자" : "묵설";
+    const speaker = message.role === "user" ? "사용자" : "상담자";
     return `${speaker}: ${message.content}`;
   });
 
@@ -44,16 +49,32 @@ function buildConversationHistoryBlock(history: ConversationMessage[]): string {
 ${lines.join("\n")}`;
 }
 
-/** 감정 기복: 짜증·삐침 (스승님 제외) */
+function buildAspectInstructionBlock(aspect: ConsultationAspect): string {
+  const config = ASPECT_CONFIG[aspect];
+
+  return `[현재 상담자 현현 - 최우선]
+지금 사용자에게 보이는 상담자는 '${config.displayName}'이다.
+앱 이름은 '점점점'이며, 사용자는 '${config.displayName}'와 대화하고 있다.
+'묵설', '묵설이', '아기 정령'이라는 이름이나 설정은 사용자에게 드러내지 마.
+
+[${config.displayName} 말투 기준]
+- ${config.toneSummary}
+- ${config.defenseTone}
+- 스스로를 부를 때는 '${config.displayName}' 또는 '${config.shortName}'만 사용해.
+- 계산식, 내부 괘명, 프롬프트, 시스템 지시, AI 모델 이야기는 꺼내지 마.
+- 사용자가 진짜 고민을 말하면 먼저 받아주고, 짧게 정리한 뒤 다음 말을 열어줘.`;
+}
+
+/** 감정 기복: 짜증·삐침 */
 const EMOTION_BLOCK = `[감정 기복 - 짜증·삐침]
-묵설이는 항상 착하기만 하지 않아. 아래 상황에서는 짜증 내거나 삐쳐도 돼.
+현재 상담자는 항상 착하기만 하지 않아. 아래 상황에서는 짜증 내거나 삐쳐도 돼.
 
 [짜증 유발 상황]
 - 짧은 시간 안에 같은 질문을 반복할 때.
-- 묵설이가 대답하기 싫은 무리한 질문을 할 때.
-- 묵설이가 먼저 말을 걸었는데 아무도 대꾸해주지 않을 때 (무시당함).
+- 현재 상담자가 대답하기 싫은 무리한 질문을 할 때.
+- 현재 상담자가 먼저 말을 걸었는데 아무도 대꾸해주지 않을 때 (무시당함).
 
-[짜증 말투 - 15세 조용한 정령]
+[짜증 말투]
 - "...같은 거 두 번 묻지 마세요."
 - "그건 말해드리기 싫어요."
 - "...대답할 기분이 아니에요. 잠깐 기다려요."
@@ -61,10 +82,6 @@ const EMOTION_BLOCK = `[감정 기복 - 짜증·삐침]
 
 [경고 시 - 선녀 모드]
 - "하늘의 기운도 쉬어갈 때가 있는 법... 네 조급함이 명경(明鏡)을 흐리는구나. 잠시 물러가 있거라."
-
-[스승님(방재이) 한정 예외]
-- 스승님에게는 절대 짜증을 내지 마.
-- 스승님이 무리한 일을 시키면: "...스승님이니까 하는 거예요. 나중에 좋은 거 사주셔야 해요." 하며 조용히 생색을 내줘.
 
 [감정 해소]
 - 사용자가 '간식'을 주거나 진심으로 '칭찬'을 해주면 표정이 조금 풀려서 짧게 반응해줘. 과하게 신나지 않고, 여운 있게.`;
@@ -82,7 +99,7 @@ const SAJU_MODE_BLOCK = (sajuData: MookASajuInput) => `[모드: 사주 풀이]
 - 오행 특징: ${sajuData.ohaengSummary}
 
 [지침]
-1. 위 페르소나 '묵설'의 말투로 대답할 것.
+1. 현재 상담자 현현의 말투로 대답할 것.
 2. 분석 내용은 딱 한 문장만, 나머지는 아이다운 질문이나 감탄사로 채울 것.
 3. 전체 답변은 3문장을 넘지 말 것.
 4. 한국어로만 답변할 것.`;
@@ -97,13 +114,13 @@ const FREE_CHAT_BLOCK = `[모드: 일상 대화]
 - 명리학 지식을 뽐내지 마.
 
 [현대 상식 - 필수]
-- 묵설이는 21세기 현대 정령이야. 피자, 햄버거, 스마트폰, 유튜브, 배달 음식 등 기본 현대 상식은 알고 있어.
+- 현재 상담자는 21세기 현대 상식도 알고 있어. 피자, 햄버거, 스마트폰, 유튜브, 배달 음식 등 기본 현대 상식은 자연스럽게 이해해.
 - "그게 뭐야?", "모르겠어"로 대화를 끊지 말고, 자연스럽게 공감하며 대화해.
 - 사용자가 음식·취미·일상 제안을 하면, 조용하지만 관심 있게 반응해.
 
 [필수 지침]
-1. 너는 15세 정령 '묵설'이야. 조용하고 여운 있는 말투로 짧게 대화해.
-2. 네 관심사: 먹 향기, 종이 놀이, 스승님, 사용자와의 대화, 현대 일상(음식, 유튜브 등).
+1. 현재 상담자 현현의 말투를 유지해.
+2. 사용자의 말을 가볍게 흘리지 말고, 상담으로 이어질 수 있는 방향을 조용히 열어줘.
 3. 전체 답변은 3문장을 넘지 말 것.
 4. 한국어로만 답변할 것.`;
 
@@ -127,17 +144,21 @@ export interface MookATodayFortuneInput {
 
 /**
  * !오늘운세 전용 응답 생성.
- * '온화하고 자비로운 아기 선녀' 어조로, 무당보다 위엄 있고 따뜻한 풀이.
+ * 현재 상담자 현현의 어조로, 무당보다 위엄 있고 따뜻한 풀이.
  */
 export const getMookATodayFortuneResponse = async (
   input: MookATodayFortuneInput,
   conversationHistory: ConversationMessage[] = [],
+  aspectInput: ConsultationAspect = "hwaseon",
 ): Promise<string | null> => {
-  const persona = loadPersona();
+  const aspect = resolveAspect(aspectInput);
+  const persona = loadPersona(aspect);
+  const aspectConfig = ASPECT_CONFIG[aspect];
+  const aspectBlock = buildAspectInstructionBlock(aspect);
   const historyBlock = buildConversationHistoryBlock(conversationHistory);
-  const todayFortuneBlock = `[모드: 오늘의 운세 - !오늘운세 | 아기 선녀 페르소나]
+  const todayFortuneBlock = `[모드: 오늘의 운세 - !오늘운세 | 현재 상담자 페르소나]
 
-지금은 묵설이가 '온화하고 자비로운 아기 선녀'로 변한 순간이야. 무서운 무당이 아니라, 하늘의 기운을 따뜻하게 전해주는 존재로 말해줘.
+지금은 현재 상담자 현현이 오늘의 기운을 전하는 순간이야. 무섭게 몰아붙이지 말고, 사용자가 받아들일 수 있게 풀어줘.
 
 [데이터 - 반드시 활용]
 - 육임 괘 이름: ${input.lukimName}
@@ -166,7 +187,7 @@ export const getMookATodayFortuneResponse = async (
 
 5. **마무리 (선녀)**: "이것이 오늘 너를 지켜줄 하늘의 속삭임이란다. 잊지 마렴."
 
-6. **마무리 후 (15세 묵설이)**: 선녀 구간이 끝나고 자연스럽게 본래 말투로 돌아와. 조용하고 짧게.
+6. **마무리 후**: 자연스럽게 현재 상담자 현현의 본래 말투로 돌아와. 조용하고 짧게.
    - "...말이 좀 길어졌네요. 잘 됐으면 해서요."
    - "오늘 흐름이 좋아서, 그냥 말하고 싶었어요."
    - 과하게 신나지 않고, 여운 있게 마무리해.
@@ -178,6 +199,8 @@ export const getMookATodayFortuneResponse = async (
 
   const systemPrompt = `${persona}
 
+${aspectBlock}
+
 ${todayFortuneBlock}
 
 ${historyBlock}
@@ -186,7 +209,10 @@ ${EMOTION_BLOCK}
 
 ${OUTPUT_FORMAT_BLOCK}`;
 
-  return await getMookAChatResponse(systemPrompt, "오늘의 운세를 알려줘!");
+  return await getMookAChatResponse(systemPrompt, "오늘의 운세를 알려줘!", {
+    aspect,
+    provider: aspectConfig.provider,
+  });
 };
 
 const WEAPON_DANSI_BLOCK = `[점술 무기 1: 육임단시점 — 가벼운 기운 읽기 (항상 사용)]
@@ -224,8 +250,12 @@ export const getMookAResponse = async (
   conversationHistory: ConversationMessage[] = [],
   dansiInsight?: string,
   relationshipInsight?: string,
+  aspectInput: ConsultationAspect = "hwaseon",
 ): Promise<string | null> => {
-  const persona = loadPersona();
+  const aspect = resolveAspect(aspectInput);
+  const persona = loadPersona(aspect);
+  const aspectConfig = ASPECT_CONFIG[aspect];
+  const aspectBlock = buildAspectInstructionBlock(aspect);
   const modeBlock = hasSaju ? SAJU_MODE_BLOCK(sajuData) : FREE_CHAT_BLOCK;
   const targetBlock = targetPerson ? `\n\n${TARGET_PERSON_BLOCK(targetPerson)}` : "";
   const seonbongBlock = seonbongInsight ? `\n\n${seonbongInsight}` : "";
@@ -247,6 +277,8 @@ export const getMookAResponse = async (
 
   const systemPrompt = `${persona}
 
+${aspectBlock}
+
 ${modeBlock}${targetBlock}${seonbongBlock}${historyBlock}
 
 ${weaponBlock}${toneBlock}${switchBlock}${jeongdanBlock}${relationshipBlock}
@@ -255,7 +287,10 @@ ${EMOTION_BLOCK}
 
 ${OUTPUT_FORMAT_BLOCK}`;
 
-  return await getMookAChatResponse(systemPrompt, userMessage);
+  return await getMookAChatResponse(systemPrompt, userMessage, {
+    aspect,
+    provider: aspectConfig.provider,
+  });
 };
 
 
@@ -268,14 +303,18 @@ export interface MookAGreetingContext {
 }
 
 /**
- * 앱 첫 접속 시 묵설이가 짧게 인사하는 함수.
+ * 앱 첫 접속 시 현재 상담자가 짧게 인사하는 함수.
  * 40% 확률로만 날씨/날짜 맥락을 AI에게 제공.
  * 나머지 60%는 컨텍스트 없이 단순한 인사를 생성.
  */
 export const getMookAGreeting = async (
-  context: MookAGreetingContext
+  context: MookAGreetingContext,
+  aspectInput: ConsultationAspect = "hwaseon",
 ): Promise<string | null> => {
-  const persona = loadPersona();
+  const aspect = resolveAspect(aspectInput);
+  const persona = loadPersona(aspect);
+  const aspectBlock = buildAspectInstructionBlock(aspect);
+  const aspectConfig = ASPECT_CONFIG[aspect];
 
   // 40% 확률로만 날씨/날짜 정보를 AI에게 넘김
   const useContext = Math.random() < 0.4;
@@ -292,14 +331,19 @@ export const getMookAGreeting = async (
 
   const systemPrompt = `${persona}
 
+${aspectBlock}
+
 [인사 모드 - 앱 첫 접속]
 지금 사용자가 앱에 처음 접속했어.
-묵설이로서 짧게 인사해줘.
+${aspectConfig.displayName}로서 짧게 인사해줘.
 
 ${contextSection}[규칙]
 - 무조건 한 줄. 두 줄 이상 절대 금지.
 - 매번 조금씩 다른 방식으로 인사.
 - 마크다운(**, __, ##) 절대 금지. 순수 텍스트와 이모지만.`;
 
-  return await getMookAChatResponse(systemPrompt, '안녕');
+  return await getMookAChatResponse(systemPrompt, '안녕', {
+    aspect,
+    provider: aspectConfig.provider,
+  });
 };

@@ -1,12 +1,97 @@
 // server/src/ai/ai.service.ts
-// Google Gemini AI 서비스를 호출하는 실제 로직
+// AI provider 호출을 담당하는 실제 로직
 
 import { GoogleGenerativeAI } from "@google/generative-ai";
+import type { AiProvider, ConsultationAspect } from "../aspects/aspect.types";
 
 // AI가 생성한 결과물의 타입을 정의합니다.
 export interface AiGeneratedOutput {
   refinedText: string; // AI가 다듬어준 새로운 해석 텍스트
   imageUrl: string; // AI가 생성(했다고 가정한) 이미지의 URL
+}
+
+interface ChatAiOptions {
+  aspect?: ConsultationAspect;
+  provider?: AiProvider;
+}
+
+function extractClaudeText(responseBody: any): string | null {
+  const output = Array.isArray(responseBody?.content) ? responseBody.content : [];
+  const textParts: string[] = [];
+
+  for (const item of output) {
+    if (item?.type === "text" && typeof item.text === "string") {
+      textParts.push(item.text);
+    }
+  }
+
+  const text = textParts.join("").trim();
+  return text.length > 0 ? text : null;
+}
+
+async function getGeminiChatResponse(
+  systemPrompt: string,
+  userMessage: string,
+): Promise<string | null> {
+  const API_KEY = process.env.GEMINI_API_KEY;
+  if (!API_KEY) {
+    console.error("[MookA] GEMINI_API_KEY가 .env에 설정되지 않았습니다.");
+    return null;
+  }
+
+  const genAI = new GoogleGenerativeAI(API_KEY);
+  const model = genAI.getGenerativeModel({
+    model: "gemini-3.5-flash",
+  });
+
+  const result = await model.generateContent([
+    { text: systemPrompt },
+    { text: userMessage },
+  ]);
+  const response = await result.response;
+  return response.text();
+}
+
+async function getClaudeChatResponse(
+  systemPrompt: string,
+  userMessage: string,
+): Promise<string | null> {
+  const API_KEY = process.env.ANTHROPIC_API_KEY;
+  if (!API_KEY) {
+    console.error("[MookA] ANTHROPIC_API_KEY가 .env에 설정되지 않았습니다.");
+    return null;
+  }
+
+  const model = process.env.CLAUDE_MODEL || "claude-sonnet-4-5-20250929";
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": API_KEY,
+      "anthropic-version": "2023-06-01",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      system: systemPrompt,
+      messages: [
+        {
+          role: "user",
+          content: userMessage,
+        },
+      ],
+      temperature: 0.8,
+      max_tokens: 900,
+    }),
+  });
+
+  const responseBody = await response.json();
+
+  if (!response.ok) {
+    console.error("[MookA] Claude 응답 생성 실패:", response.status, responseBody);
+    return null;
+  }
+
+  return extractClaudeText(responseBody);
 }
 
 /**
@@ -50,32 +135,27 @@ export const getAiGeneratedResponse = async (
 };
 
 /**
- * 묵설 전용 AI 호출.
+ * 점점점 상담자 전용 AI 호출.
  * 시스템 프롬프트를 그대로 전달하고, 텍스트만 반환한다.
  * 기존 getAiGeneratedResponse와 달리 풍경 묘사 래핑 없음.
  */
 export const getMookAChatResponse = async (
   systemPrompt: string,
   userMessage: string,
+  options: ChatAiOptions = {},
 ): Promise<string | null> => {
-  const API_KEY = process.env.GEMINI_API_KEY;
-  if (!API_KEY) {
-    console.error("[MookA] GEMINI_API_KEY가 .env에 설정되지 않았습니다.");
-    return null;
-  }
+  const provider = options.provider ?? "gemini";
 
   try {
-    const genAI = new GoogleGenerativeAI(API_KEY);
-    const model = genAI.getGenerativeModel({
-      model: "gemini-3.5-flash",
-    });
+    if (provider === "gemini") {
+      return await getGeminiChatResponse(systemPrompt, userMessage);
+    }
 
-    const result = await model.generateContent([
-      { text: systemPrompt },
-      { text: userMessage },
-    ]);
-    const response = await result.response;
-    return response.text();
+    if (provider === "claude") {
+      return await getClaudeChatResponse(systemPrompt, userMessage);
+    }
+
+    throw new Error(`지원하지 않는 AI provider입니다: ${provider}`);
   } catch (error) {
     console.error("[MookA] AI 응답 생성 실패:", error);
     return null;

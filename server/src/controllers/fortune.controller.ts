@@ -14,6 +14,7 @@ import {
 import {
   appendConversationMessage,
   consumeNudge,
+  getDefenseStatus,
   getConversationHistory,
   getConsultationContext,
   getCurrentDansiInterpretationId,
@@ -21,6 +22,8 @@ import {
   handleNudgeResponse,
   manualReset,
   recordTurn,
+  recordDefenseIncident,
+  releaseDefense,
   setAccountProfileCandidate,
   setCurrentDansiInterpretationId,
   setCurrentJeomsi,
@@ -29,11 +32,14 @@ import {
   touchSession,
   trackCategories,
 } from "../services/session.service";
+import { buildDefenseReply, buildDefenseReturnReply, decideDefense } from "../services/defense.service";
 import { getLukimInterpretation, type LukimInterpretation } from "../data/lukim-interpretations";
 import { matchCategories } from "../data/serious-keywords";
 import { handleConsultationIntake } from "../services/consultation-intake.service";
 import { resolveSolarBirthDate } from "../services/birth-date.service";
+import { resolveAspect } from "../aspects/aspect.config";
 import type { CalendarType, ConsultationPersonProfile, GenderForCalculation, SocialLoginProvider } from "../types/consultation";
+import type { ConsultationAspect } from "../aspects/aspect.types";
 
 interface FortuneRequestBody {
   name?: string;
@@ -121,13 +127,13 @@ export const getLukimAPI = async (
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// POST /api/chat — 묵설이 채팅
+// POST /api/chat — 점점점 상담 채팅
 // ══════════════════════════════════════════════════════════════════════════════
 
 const TODAY_FORTUNE_PATTERN = /!?\s*오늘\s*운세|오늘의?\s*운세|오늘\s*운세\s*봐/i;
 const RELATIONSHIP_READING_PATTERN =
   /궁합|결혼|혼인|부부|관계|사이|잘\s*될|잘\s*맞|재회|헤어|이별|속마음|마음\s*(알|궁금)|인연/;
-const SPAM_REPLY = "아우 정신없어! 스승님, 이 사람이 자꾸 말을 끊어서 해요! 짹!";
+const SPAM_REPLY = "말이 너무 한꺼번에 몰려왔어요. 잠깐만 멈추고, 제일 중요한 질문 하나부터 다시 말해주세요.";
 
 function getProvidedConversationId(conversationId?: string, userId?: string): string | undefined {
   const candidate = conversationId?.trim() || userId?.trim();
@@ -209,12 +215,14 @@ export const getMookAFortuneAPI = async (
       targetPerson?: string;
       calendarType?: "solar" | "lunar";
       isLeapMonth?: boolean;
+      aspect?: ConsultationAspect;
     }
   >,
   res: Response,
 ) => {
   try {
     const { conversationId, userId, birthDate, birthTime, gender, message, targetPerson, calendarType, isLeapMonth } = req.body;
+    const aspect = resolveAspect(req.body.aspect);
 
     if (!message) {
       return res.status(400).json({ error: true, message: "message가 필요합니다." });
@@ -230,7 +238,7 @@ export const getMookAFortuneAPI = async (
       : createImmediateResult({ message, birthDate, birthTime, gender, calendarType, isLeapMonth, targetPerson });
 
     if (useLegacyDebounce && typeof debouncedOrCollecting === "object" && "primary" in debouncedOrCollecting && !debouncedOrCollecting.primary) {
-      return res.status(202).json({ error: false, conversationId: sessionUserId, status: "collecting", sendToUser: false, hint: "묵설이가 읽고 있어요..." });
+      return res.status(202).json({ error: false, conversationId: sessionUserId, status: "collecting", sendToUser: false, hint: "읽고 있어요..." });
     }
 
     const debounced = debouncedOrCollecting as MookADebounceResult;
@@ -250,6 +258,44 @@ export const getMookAFortuneAPI = async (
     if (RESET_PATTERN.test(combinedMessage)) {
       manualReset(sessionUserId);
     }
+    const defenseDecision = decideDefense(combinedMessage, getDefenseStatus(sessionUserId));
+    if (defenseDecision.action === "return") {
+      appendConversationMessage(sessionUserId, "user", combinedMessage);
+      const defenseStatus = releaseDefense(sessionUserId);
+      const reply = buildDefenseReturnReply(aspect);
+      appendConversationMessage(sessionUserId, "assistant", reply);
+      await saveAuthorizedSession(sessionUserId, res);
+      return res.status(200).json({
+        error: false,
+        conversationId: sessionUserId,
+        reply,
+        defense: true,
+        defenseType: defenseDecision.incidentType,
+        defenseLocked: defenseStatus.locked,
+        defenseReleased: true,
+      });
+    }
+
+    if (defenseDecision.action === "defend") {
+      appendConversationMessage(sessionUserId, "user", combinedMessage);
+      const defenseStatus = recordDefenseIncident(sessionUserId, defenseDecision.incidentType);
+      const reply = buildDefenseReply(aspect, defenseDecision.incidentType, defenseStatus);
+      appendConversationMessage(sessionUserId, "assistant", reply);
+      await saveAuthorizedSession(sessionUserId, res);
+      return res.status(200).json({
+        error: false,
+        conversationId: sessionUserId,
+        reply,
+        defense: true,
+        defenseType: defenseDecision.incidentType,
+        defenseLocked: defenseStatus.locked,
+      });
+    }
+
+    if (defenseDecision.releaseDefense) {
+      releaseDefense(sessionUserId);
+    }
+
     const conversationHistory = getConversationHistory(sessionUserId);
     appendConversationMessage(sessionUserId, "user", combinedMessage);
     const hasDirectReadingProfile = !!(effectiveBirthDate && effectiveGender);
@@ -398,6 +444,7 @@ export const getMookAFortuneAPI = async (
               advice: todayResult.fortune.advice,
             },
             conversationHistory,
+            aspect,
           );
 
           if (reply) {
@@ -483,8 +530,8 @@ export const getMookAFortuneAPI = async (
 최적 타이밍: ${result.q6.method}
 절대 금지: ${result.q7.warning} — ${result.q7.detail}
 
-[묵설이 활용 지침]
-- 위 해석을 그대로 읽어주지 마. 묵설이 말투로 자연스럽게 풀어서 전달해.
+[현재 상담자 활용 지침]
+- 위 해석을 그대로 읽어주지 마. 현재 상담자 말투로 자연스럽게 풀어서 전달해.
 - 한 번에 다 말하지 마. 사용자 질문에 맞는 부분만 골라서 답해.
 - 점수는 절대 말하지 마. 느낌과 감각으로 표현해.
 - 반드시 질문으로 끝내서 대화를 이어가.`;
@@ -495,10 +542,10 @@ export const getMookAFortuneAPI = async (
       }
     }
 
-    const reply = await getMookAResponse(sajuInfo, combinedMessage, hasSaju, effectiveTargetPerson, seonbongInsight, useJeongdan, categoryTones, isCategorySwitch ? switchedCategories : undefined, jeongdanInsight, conversationHistory, dansiInsight, relationshipInsight);
+    const reply = await getMookAResponse(sajuInfo, combinedMessage, hasSaju, effectiveTargetPerson, seonbongInsight, useJeongdan, categoryTones, isCategorySwitch ? switchedCategories : undefined, jeongdanInsight, conversationHistory, dansiInsight, relationshipInsight, aspect);
 
     if (!reply) {
-      return res.status(500).json({ error: true, message: "묵설이가 잠들었나봐요! (AI 응답 없음)" });
+      return res.status(500).json({ error: true, message: "상담자가 잠시 말을 잃었어요. (AI 응답 없음)" });
     }
 
     appendConversationMessage(sessionUserId, "assistant", reply);
@@ -506,8 +553,8 @@ export const getMookAFortuneAPI = async (
     return res.status(200).json({ error: false, conversationId: sessionUserId, reply, turnCount, useJeongdan, categories: categoryNames.length > 0 ? categoryNames : undefined });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
-    console.error("[묵설이] 오류:", errMsg);
-    return res.status(500).json({ error: true, message: `묵설이가 잠들었나봐요! (${errMsg})` });
+    console.error("[상담 채팅] 오류:", errMsg);
+    return res.status(500).json({ error: true, message: `상담자가 잠시 말을 잃었어요. (${errMsg})` });
   }
 };
 
@@ -572,6 +619,8 @@ export const getSessionAPI = async (
     hasReadingSubject: info?.hasReadingSubject ?? false,
     hasRelationshipTarget: info?.hasRelationshipTarget ?? false,
     intakeStage: info?.intakeStage ?? "idle",
+    defenseCount: info?.defenseCount ?? 0,
+    defenseLocked: info?.defenseLocked ?? false,
   });
 };
 
@@ -631,10 +680,11 @@ export const linkAccountProfileCandidateAPI = async (
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GET /api/greeting — 묵설이 앱 첫 접속 인사말 생성
+// GET /api/greeting — 앱 첫 접속 인사말 생성
 // ══════════════════════════════════════════════════════════════════════════════
-export const getGreetingAPI = async (req: Request, res: Response) => {
+export const getGreetingAPI = async (req: Request<ParamsDictionary, any, any, { aspect?: ConsultationAspect }>, res: Response) => {
   try {
+    const aspect = resolveAspect(req.query.aspect);
     // KST(UTC+9) 기준 현재 시각 계산
     const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
     const month = kst.getUTCMonth() + 1;
@@ -671,7 +721,7 @@ export const getGreetingAPI = async (req: Request, res: Response) => {
     }
 
     const { getMookAGreeting } = await import('../services/mookA.service');
-    const greeting = await getMookAGreeting({ timeOfDay, weekday, month, season, weather });
+    const greeting = await getMookAGreeting({ timeOfDay, weekday, month, season, weather }, aspect);
 
     return res.status(200).json({
       error: false,
