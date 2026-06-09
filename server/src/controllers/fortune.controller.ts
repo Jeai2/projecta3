@@ -14,6 +14,7 @@ import {
 import {
   appendConversationMessage,
   consumeNudge,
+  getCheoneumSessionState,
   getDefenseStatus,
   getConversationHistory,
   getConsultationContext,
@@ -31,8 +32,12 @@ import {
   setRelationshipTarget,
   touchSession,
   trackCategories,
+  updateCheoneumSessionState,
 } from "../services/session.service";
 import { buildDefenseReply, buildDefenseReturnReply, decideDefense } from "../services/defense.service";
+import { createCheoneumReading, getCheoneumCardCounts } from "../cheoneum/cheoneum.service";
+import { buildCheoneumClientHint, buildCheoneumInsight, createTodayCheoneumDecision, decideCheoneumIntervention } from "../cheoneum/cheoneum-consultation.service";
+import type { CheoneumSpreadId } from "../cheoneum/cheoneum.types";
 import { getLukimInterpretation, type LukimInterpretation } from "../data/lukim-interpretations";
 import { matchCategories } from "../data/serious-keywords";
 import { handleConsultationIntake } from "../services/consultation-intake.service";
@@ -55,6 +60,30 @@ interface ErrorResponseBody {
   error: true;
   message: string;
 }
+
+// ══════════════════════════════════════════════════════════════════════════════
+// POST /api/cheoneum/draw — card layout result
+// ══════════════════════════════════════════════════════════════════════════════
+export const getCheoneumDrawAPI = async (
+  req: Request<ParamsDictionary, any, { aspect?: ConsultationAspect; spread?: CheoneumSpreadId }>,
+  res: Response,
+) => {
+  try {
+    const reading = createCheoneumReading({
+      aspect: req.body.aspect,
+      spread: req.body.spread,
+    });
+
+    return res.status(200).json({
+      error: false,
+      data: reading,
+      cardCounts: getCheoneumCardCounts(),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "카드 결과를 만들 수 없습니다.";
+    return res.status(400).json({ error: true, message });
+  }
+};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // POST /api/today — 오늘의 운세
@@ -148,6 +177,17 @@ function resolveConversationId(conversationId?: string, userId?: string): string
 function getAuthenticatedUserId(res: Response): string | undefined {
   const candidate = res.locals.authenticatedUserId;
   return typeof candidate === "string" && candidate.trim() ? candidate.trim().slice(0, 128) : undefined;
+}
+
+const CALCULATION_READING_PATTERN =
+  /육임|단시|정단|대육임|궁합/i;
+const ENABLE_PROFILE_BASED_READING = false;
+
+function shouldRunConsultationIntake(message: string, stage: string | undefined): boolean {
+  if (!ENABLE_PROFILE_BASED_READING) return false;
+  if (stage && stage !== "idle" && stage !== "ready") return true;
+  if (CALCULATION_READING_PATTERN.test(message)) return true;
+  return false;
 }
 
 async function restoreAuthorizedSession(conversationId: string, res: Response): Promise<boolean> {
@@ -298,8 +338,14 @@ export const getMookAFortuneAPI = async (
 
     const conversationHistory = getConversationHistory(sessionUserId);
     appendConversationMessage(sessionUserId, "user", combinedMessage);
-    const hasDirectReadingProfile = !!(effectiveBirthDate && effectiveGender);
-    if (!hasDirectReadingProfile) {
+    const isTodayFortuneRequest = TODAY_FORTUNE_PATTERN.test(combinedMessage.trim());
+    const hasDirectReadingProfile = ENABLE_PROFILE_BASED_READING && !!(effectiveBirthDate && effectiveGender);
+    const preIntakeContext = getConsultationContext(sessionUserId);
+    const shouldCollectProfile = shouldRunConsultationIntake(
+      combinedMessage,
+      preIntakeContext?.intake.stage,
+    );
+    if (!hasDirectReadingProfile && shouldCollectProfile) {
       const intakeResponse = await handleConsultationIntake(sessionUserId, combinedMessage);
       if (intakeResponse) {
         touchSession(sessionUserId);
@@ -318,7 +364,7 @@ export const getMookAFortuneAPI = async (
     const { turnCount, useJeongdan: turnBasedJeongdan } = recordTurn(sessionUserId);
 
     const context = getConsultationContext(sessionUserId);
-    const storedSubject = context?.intake.stage === "ready" ? context.readingSubject : null;
+    const storedSubject = ENABLE_PROFILE_BASED_READING && context?.intake.stage === "ready" ? context.readingSubject : null;
     const storedSubjectReady =
       !!storedSubject?.birth?.date &&
       !!storedSubject.birth.calendarType &&
@@ -346,7 +392,7 @@ export const getMookAFortuneAPI = async (
     let activeDansiInterpretation: LukimInterpretation | null = null;
     let relationshipInsight: string | undefined;
     const hasSaju = calculationProfile !== null;
-    const isTodayFortuneRequest = TODAY_FORTUNE_PATTERN.test(combinedMessage.trim());
+    const useLegacyProfileTodayFortune = false;
 
     if (calculationProfile) {
       const resolvedBirthDate = await resolveSolarBirthDate({
@@ -420,7 +466,7 @@ export const getMookAFortuneAPI = async (
         }
       }
 
-      if (isTodayFortuneRequest) {
+      if (useLegacyProfileTodayFortune && isTodayFortuneRequest) {
         const todayResult = await getTodayFortune({
           name: "",
           birthDate: calculationProfile.birthDate,
@@ -477,8 +523,31 @@ export const getMookAFortuneAPI = async (
     const isCategorySwitch = switchedCategories.length > 0 && turnCount > 1 && keywordJeongdan;
 
     const categoryTones = matchedCategories.map((c) => c.tone);
+    const cheoneumSession = getCheoneumSessionState(sessionUserId);
+    const cheoneumDecision = isTodayFortuneRequest
+      ? createTodayCheoneumDecision(cheoneumSession)
+      : decideCheoneumIntervention({
+          message: combinedMessage,
+          turnCount,
+          session: cheoneumSession,
+        });
+    let cheoneumReading: ReturnType<typeof createCheoneumReading> | undefined;
+    let cheoneumInsight: string | undefined;
+
+    if (cheoneumDecision.shouldUse && cheoneumDecision.spread) {
+      cheoneumReading = createCheoneumReading({ aspect, spread: cheoneumDecision.spread });
+      cheoneumInsight = buildCheoneumInsight(cheoneumReading, cheoneumDecision);
+    }
+
+    const cheoneumState = updateCheoneumSessionState(sessionUserId, {
+      resonanceDelta: cheoneumDecision.resonanceDelta,
+      depthLevel: cheoneumDecision.depthLevel,
+      usedSpread: cheoneumReading?.spread,
+      currentTurn: turnCount,
+    });
 
     console.log(`[세션] conversationId=${sessionUserId} | 턴=${turnCount} | 정단=${useJeongdan}${keywordJeongdan ? ` (분야: ${categoryNames.join(", ")})` : ''}${isCategorySwitch ? ` [전환: ${switchedCategories.join(", ")}]` : ''}`);
+    console.log(`[Cheoneum] use=${!!cheoneumReading} | type=${cheoneumDecision.inputType} | depth=${cheoneumDecision.depthLevel} | resonance=${cheoneumState.resonance} | spread=${cheoneumReading?.spread ?? "none"} | reason=${cheoneumDecision.reason}`);
 
     const { getMookAResponse } = await import("../services/mookA.service");
     let seonbongInsight: string | undefined;
@@ -542,7 +611,7 @@ export const getMookAFortuneAPI = async (
       }
     }
 
-    const reply = await getMookAResponse(sajuInfo, combinedMessage, hasSaju, effectiveTargetPerson, seonbongInsight, useJeongdan, categoryTones, isCategorySwitch ? switchedCategories : undefined, jeongdanInsight, conversationHistory, dansiInsight, relationshipInsight, aspect);
+    const reply = await getMookAResponse(sajuInfo, combinedMessage, hasSaju, effectiveTargetPerson, seonbongInsight, useJeongdan, categoryTones, isCategorySwitch ? switchedCategories : undefined, jeongdanInsight, conversationHistory, dansiInsight, relationshipInsight, aspect, cheoneumInsight);
 
     if (!reply) {
       return res.status(500).json({ error: true, message: "상담자가 잠시 말을 잃었어요. (AI 응답 없음)" });
@@ -550,7 +619,20 @@ export const getMookAFortuneAPI = async (
 
     appendConversationMessage(sessionUserId, "assistant", reply);
     await saveAuthorizedSession(sessionUserId, res);
-    return res.status(200).json({ error: false, conversationId: sessionUserId, reply, turnCount, useJeongdan, categories: categoryNames.length > 0 ? categoryNames : undefined });
+    return res.status(200).json({
+      error: false,
+      conversationId: sessionUserId,
+      reply,
+      turnCount,
+      useJeongdan,
+      categories: categoryNames.length > 0 ? categoryNames : undefined,
+      cheoneum: cheoneumReading
+        ? {
+            ...cheoneumReading,
+            hint: buildCheoneumClientHint(cheoneumDecision, combinedMessage),
+          }
+        : undefined,
+    });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
     console.error("[상담 채팅] 오류:", errMsg);
@@ -621,6 +703,9 @@ export const getSessionAPI = async (
     intakeStage: info?.intakeStage ?? "idle",
     defenseCount: info?.defenseCount ?? 0,
     defenseLocked: info?.defenseLocked ?? false,
+    cheoneumResonance: info?.cheoneumResonance ?? 20,
+    cheoneumLastSpread: info?.cheoneumLastSpread ?? null,
+    cheoneumLastDepth: info?.cheoneumLastDepth ?? 0,
   });
 };
 

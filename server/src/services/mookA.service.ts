@@ -5,6 +5,15 @@ import type { ConversationMessage } from "./session.service";
 import fs from "fs";
 import path from "path";
 
+const PRODUCT_SCOPE_BLOCK = `[제품 범위 - 필수]
+- 이 앱은 사주풀이 앱이 아니다.
+- 사용자가 사주를 봐 달라고 해도 생년월일을 요구하지 말고, 카드나 패로 현재 흐름만 짧게 본다.
+- "사주", "팔자", "명식", "일주", "오행" 같은 표현을 사용자 응답에 꺼내지 않는다.
+- 오늘 운세는 생년월일 기반 운세가 아니라 카드 한 장의 흐름으로만 말한다.
+- 평소에는 "천음"이라는 이름을 먼저 꺼내지 말고 "카드", "패", "한 장", "펼쳐볼게요" 같은 표현을 쓴다.
+- 사용자가 "이게 타로야?", "무슨 점이야?", "천음이 뭐야?"처럼 물을 때만 "천음"을 설명한다.
+- 설명할 때는 "타로와 비슷하게 카드를 펼치지만, 이 앱 안에서는 동양적 상징과 무구로 만든 별도의 점사 방식"이라고 짧게 말한다.`;
+
 const cachedAspectPersonas: Partial<Record<ConsultationAspect, string>> = {};
 
 function loadPersona(aspectInput: ConsultationAspect): string {
@@ -201,6 +210,8 @@ export const getMookATodayFortuneResponse = async (
 
 ${aspectBlock}
 
+${PRODUCT_SCOPE_BLOCK}
+
 ${todayFortuneBlock}
 
 ${historyBlock}
@@ -251,6 +262,7 @@ export const getMookAResponse = async (
   dansiInsight?: string,
   relationshipInsight?: string,
   aspectInput: ConsultationAspect = "hwaseon",
+  cheoneumInsight?: string,
 ): Promise<string | null> => {
   const aspect = resolveAspect(aspectInput);
   const persona = loadPersona(aspect);
@@ -266,22 +278,27 @@ export const getMookAResponse = async (
       : `${WEAPON_DANSI_BLOCK}\n\n${dansiInsight}`
     : hasJeongdanInsight
       ? `${DANSI_PENDING_BLOCK}\n\n${WEAPON_JEONGDAN_BLOCK}`
-      : DANSI_PENDING_BLOCK;
+      : cheoneumInsight
+        ? ""
+        : DANSI_PENDING_BLOCK;
   const toneBlock = categoryTones.length > 0 ? `\n\n${categoryTones.join("\n\n")}` : "";
   const switchBlock = switchedCategories && switchedCategories.length > 0
     ? `\n\n${CATEGORY_SWITCH_BLOCK(switchedCategories)}`
     : "";
   const jeongdanBlock = jeongdanInsight ? `\n\n${jeongdanInsight}` : "";
   const relationshipBlock = relationshipInsight ? `\n\n${relationshipInsight}` : "";
+  const cheoneumBlock = cheoneumInsight ? `\n\n${cheoneumInsight}` : "";
   const historyBlock = buildConversationHistoryBlock(conversationHistory);
 
   const systemPrompt = `${persona}
 
 ${aspectBlock}
 
+${PRODUCT_SCOPE_BLOCK}
+
 ${modeBlock}${targetBlock}${seonbongBlock}${historyBlock}
 
-${weaponBlock}${toneBlock}${switchBlock}${jeongdanBlock}${relationshipBlock}
+${weaponBlock}${cheoneumBlock}${toneBlock}${switchBlock}${jeongdanBlock}${relationshipBlock}
 
 ${EMOTION_BLOCK}
 

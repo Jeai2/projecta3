@@ -5,7 +5,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // 로컬 테스트: PC IP 주소. 배포 후 Railway URL로 교체
-const API_URL = 'http://192.168.45.21:3001';
+const API_URL = 'http://192.168.219.101:3001';
 
 const COLORS = {
   bg: '#0E0C0A',

@@ -32,6 +32,13 @@ export interface DefenseStatus {
   updatedAt: number | null;
 }
 
+export interface CheoneumSessionState {
+  resonance: number;
+  lastUsedAtTurn: number | null;
+  lastSpread: string | null;
+  lastDepth: number;
+}
+
 interface Session {
   turnCount: number;
   state: SessionState;
@@ -43,6 +50,7 @@ interface Session {
   currentJeomsi: string | null; // 다이스로 결정된 현재 시진 (null = 실시간 사용)
   currentDansiInterpretationId: number | null;
   defense: DefenseStatus;
+  cheoneum: CheoneumSessionState;
   consultation: ConsultationContext;
   messages: ConversationMessage[];
 }
@@ -56,6 +64,7 @@ export interface PersistedSessionSnapshot {
   currentJeomsi: string | null;
   currentDansiInterpretationId: number | null;
   defense?: DefenseStatus;
+  cheoneum?: CheoneumSessionState;
   consultation: ConsultationContext;
   messages: ConversationMessage[];
 }
@@ -78,6 +87,12 @@ function createSession(): Session {
       locked: false,
       lastIncidentType: null,
       updatedAt: null,
+    },
+    cheoneum: {
+      resonance: 20,
+      lastUsedAtTurn: null,
+      lastSpread: null,
+      lastDepth: 0,
     },
     consultation: createEmptyConsultationContext(),
     messages: [],
@@ -161,6 +176,9 @@ export function getSessionInfo(userId: string): {
   intakeStage: ConsultationIntakeStage;
   defenseCount: number;
   defenseLocked: boolean;
+  cheoneumResonance: number;
+  cheoneumLastSpread: string | null;
+  cheoneumLastDepth: number;
 } | null {
   const session = sessions.get(userId);
   if (!session) return null;
@@ -175,6 +193,9 @@ export function getSessionInfo(userId: string): {
     intakeStage: session.consultation.intake.stage,
     defenseCount: session.defense.count,
     defenseLocked: session.defense.locked,
+    cheoneumResonance: session.cheoneum.resonance,
+    cheoneumLastSpread: session.cheoneum.lastSpread,
+    cheoneumLastDepth: session.cheoneum.lastDepth,
   };
 }
 
@@ -293,6 +314,7 @@ export function exportSessionSnapshot(userId: string): PersistedSessionSnapshot 
     currentJeomsi: session.currentJeomsi,
     currentDansiInterpretationId: session.currentDansiInterpretationId,
     defense: { ...session.defense },
+    cheoneum: { ...session.cheoneum },
     consultation: cloneConsultation(session.consultation),
     messages: session.messages.map((message) => ({ ...message })),
   };
@@ -318,6 +340,14 @@ export function restoreSessionSnapshot(userId: string, snapshot: PersistedSessio
           locked: false,
           lastIncidentType: null,
           updatedAt: null,
+        },
+    cheoneum: snapshot.cheoneum
+      ? { ...snapshot.cheoneum }
+      : {
+          resonance: 20,
+          lastUsedAtTurn: null,
+          lastSpread: null,
+          lastDepth: 0,
         },
     consultation: cloneConsultation(snapshot.consultation),
     messages: snapshot.messages
@@ -420,6 +450,42 @@ export function trackCategories(userId: string, currentCategories: string[]): st
 export function getPreviousCategories(userId: string): string[] {
   const session = sessions.get(userId);
   return session?.previousCategories ?? [];
+}
+
+function clampResonance(value: number): number {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+export function getCheoneumSessionState(userId: string): CheoneumSessionState {
+  return { ...ensureSession(userId).cheoneum };
+}
+
+export function updateCheoneumSessionState(
+  userId: string,
+  update: {
+    resonanceDelta?: number;
+    usedSpread?: string | null;
+    depthLevel?: number;
+    currentTurn?: number;
+  },
+): CheoneumSessionState {
+  const session = ensureSession(userId);
+  const current = session.cheoneum;
+
+  if (typeof update.resonanceDelta === "number") {
+    current.resonance = clampResonance(current.resonance + update.resonanceDelta);
+  }
+  if (typeof update.depthLevel === "number") {
+    current.lastDepth = Math.max(0, Math.min(5, Math.round(update.depthLevel)));
+  }
+  if (update.usedSpread !== undefined) {
+    current.lastSpread = update.usedSpread;
+    if (update.usedSpread && typeof update.currentTurn === "number") {
+      current.lastUsedAtTurn = update.currentTurn;
+    }
+  }
+
+  return { ...current };
 }
 
 export function manualReset(userId: string): void {
