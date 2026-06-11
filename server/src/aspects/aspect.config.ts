@@ -16,7 +16,7 @@ export const ASPECT_CONFIG: Record<ConsultationAspect, AspectConfig> = {
     displayName: "화선낭자",
     shortName: "화선",
     openLabel: "낮에 열림",
-    provider: "gemini",
+    provider: "openai",
     toneSummary: "낮에 열리는 현현. 부드럽고 따뜻하게 받아주되, 흩어진 말을 차분히 정리한다.",
     defenseTone: "선을 넘는 말에는 예의를 지키며 차분하게 멈춰 세우고, 진짜 고민으로 돌아오게 이끈다.",
   },

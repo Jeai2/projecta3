@@ -1,5 +1,6 @@
 import type { CheoneumReading, CheoneumSpreadId } from "./cheoneum.types";
 import type { CheoneumSessionState } from "../services/session.service";
+import { buildCheoneumDivinationInsight } from "./cheoneum-divination.service";
 
 export type CheoneumInputType =
   | "greeting"
@@ -199,6 +200,7 @@ export function buildCheoneumInsight(
   reading: CheoneumReading,
   decision: CheoneumInterventionDecision,
 ): string {
+  const divinationInsight = buildCheoneumDivinationInsight(reading);
   const cardLines = reading.cards
     .map((placed) => {
       const hidden = placed.orientation === "hidden" ? " / hidden" : "";
@@ -215,10 +217,12 @@ export function buildCheoneumInsight(
 - 선택된 패:
 ${cardLines}
 
+${divinationInsight ?? "[천음 점사 계산]\n- 이번 스프레드에서는 아직 계산 가능한 신패 간지가 없습니다."}
+
 [응답 지침]
 - 천음은 내부 도구 이름이다. 사용자가 묻기 전에는 "천음"이라는 이름을 직접 말하지 말고, "카드", "패", "한 장", "펼쳐보기"로 표현한다.
 - 사용자가 "이게 타로야?", "무슨 점이야?", "천음이 뭐야?"처럼 묻는 경우에만 천음을 동양적 카드 점사 무구라고 짧게 설명한다.
-- 카드 상세 해석 데이터는 아직 비어 있으므로, 카드명만 억지로 해석하지 말고 스프레드 구조와 사용자의 말에 맞춰 짧게 풀어라.
+- 카드 상세 문장 데이터는 아직 비어 있으므로, 카드명만 억지로 해석하지 말고 [천음 점사 계산]의 십성 골격과 사용자의 말을 먼저 연결한다.
 - 사용자에게 동조도 수치를 직접 말하지 마라.
 - 이번 응답은 상담을 이어가기 위한 한두 문장과 다음 질문으로 마무리한다.`;
 }

@@ -1,11 +1,11 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Keyboard, Platform, Animated, Image, ImageBackground } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Keyboard, Platform, Animated, Easing, Image, ImageBackground, type ImageSourcePropType } from 'react-native';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // 로컬 테스트: PC IP 주소. 배포 후 Railway URL로 교체
-const API_URL = 'http://192.168.219.101:3001';
+const API_URL = 'http://192.168.45.21:3001';
 
 const COLORS = {
   bg: '#0E0C0A',
@@ -72,19 +72,86 @@ type Message = {
   id: string;
   role: 'mook' | 'user';
   text: string;
-  kind?: 'normal' | 'defense';
+  kind?: 'normal' | 'defense' | 'cheoneum';
   defenseType?: DefenseType;
   defenseLocked?: boolean;
+  cheoneum?: CheoneumReading;
 };
 
 type DefenseType = 'vague' | 'laugh' | 'test' | 'attack' | 'unsafe' | 'return_intent';
+
+type CheoneumArcana = 'sinpae' | 'jinpae';
+type CheoneumOrientation = 'vertical' | 'horizontal' | 'hidden';
+type CheoneumSpreadId =
+  | 'ilgi'
+  | 'yangeui'
+  | 'tonggwan'
+  | 'cheonjiin'
+  | 'wonhyeongijeong'
+  | 'sunhwan'
+  | 'nakseo-gugung';
+
+type CheoneumCard = {
+  id: string;
+  arcana: CheoneumArcana;
+  number: number;
+  name: string;
+  hanja?: string;
+  ganji?: string;
+  image?: string;
+  keywords?: string[];
+};
+
+type CheoneumPlacedCard = {
+  card: CheoneumCard;
+  position: string;
+  label: string;
+  drawIndex: number;
+  orientation: CheoneumOrientation;
+  row?: number;
+  col?: number;
+};
+
+type CheoneumHint = {
+  title: string;
+  description: string;
+  question: string;
+};
+
+type CheoneumReading = {
+  tool: 'cheoneum';
+  aspect: Aspect;
+  polarity: 'yang' | 'yin';
+  spread: CheoneumSpreadId;
+  spreadName: string;
+  cards: CheoneumPlacedCard[];
+  note?: string;
+  hint?: CheoneumHint;
+};
 
 type ChatResponse = {
   reply?: string;
   defense?: boolean;
   defenseType?: DefenseType;
   defenseLocked?: boolean;
+  cheoneum?: CheoneumReading;
 };
+
+const CHEONEUM_CARD_IMAGES: Record<string, ImageSourcePropType> = {
+  'cheoneum-sinpae-01-cheongeuk.png': require('./assets/cheoneum/sinpae/cheoneum-sinpae-01-cheongeuk.png'),
+  'cheoneum-sinpae-02-yeompa.png': require('./assets/cheoneum/sinpae/cheoneum-sinpae-02-yeompa.png'),
+  'cheoneum-sinpae-03-myeongjeon.png': require('./assets/cheoneum/sinpae/cheoneum-sinpae-03-myeongjeon.png'),
+  'cheoneum-sinpae-04-taehwa.png': require('./assets/cheoneum/sinpae/cheoneum-sinpae-04-taehwa.png'),
+  'cheoneum-sinpae-05-jieom.png': require('./assets/cheoneum/sinpae/cheoneum-sinpae-05-jieom.png'),
+  'cheoneum-sinpae-06-bowon.png': require('./assets/cheoneum/sinpae/cheoneum-sinpae-06-bowon.png'),
+  'cheoneum-sinpae-07-jaeun.png': require('./assets/cheoneum/sinpae/cheoneum-sinpae-07-jaeun.png'),
+  'cheoneum-sinpae-08-wolyeong.png': require('./assets/cheoneum/sinpae/cheoneum-sinpae-08-wolyeong.png'),
+  'cheoneum-sinpae-09-amnyu.png': require('./assets/cheoneum/sinpae/cheoneum-sinpae-09-amnyu.png'),
+  'cheoneum-sinpae-10-gyeongyeon.png': require('./assets/cheoneum/sinpae/cheoneum-sinpae-10-gyeongyeon.png'),
+  'cheoneum-sinpae-11-hwaldo.png': require('./assets/cheoneum/sinpae/cheoneum-sinpae-11-hwaldo.png'),
+  'cheoneum-sinpae-12-taeheo.png': require('./assets/cheoneum/sinpae/cheoneum-sinpae-12-taeheo.png'),
+};
+const CHEONEUM_CARD_BACK = require('./assets/cheoneum/card-back-cheoneum.png');
 
 const QUICK = ['오늘의 운세', '점 봐주세요', '이직 고민'];
 const MAX_REPLY_BUBBLES = 4;
@@ -198,6 +265,32 @@ function getDefenseLabel(type?: DefenseType, locked?: boolean): string {
   }
 }
 
+function getCheoneumPrelude(aspect: Aspect, reading: CheoneumReading): string {
+  if (aspect === 'hwayeong') {
+    switch (reading.spread) {
+      case 'ilgi':
+        return '잠깐. 내가 먼저 한 장 뽑아볼게.';
+      case 'yangeui':
+        return '두 갈래로 나눠서 볼게. 패를 열어보자.';
+      case 'tonggwan':
+        return '사이에서 막힌 곳을 볼게. 통하는 패를 뽑아보자.';
+      default:
+        return '지금은 말보다 패가 먼저야. 내가 펼쳐볼게.';
+    }
+  }
+
+  switch (reading.spread) {
+    case 'ilgi':
+      return '좋아요. 지금 흐름을 카드 한 장으로 열어볼게요.';
+    case 'yangeui':
+      return '좋아요. 두 방향을 나눠서 한 번 알아볼게요.';
+    case 'tonggwan':
+      return '두 사람 사이의 흐름을 카드로 펼쳐볼게요.';
+    default:
+      return '좋아요. 지금 걸린 흐름을 카드로 한 번 펼쳐볼게요.';
+  }
+}
+
 
 function TypingDots() {
   const dot1 = useRef(new Animated.Value(0.15)).current;
@@ -230,6 +323,274 @@ function TypingDots() {
           style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: COLORS.gold, opacity: dot }}
         />
       ))}
+    </View>
+  );
+}
+
+function getArcanaLabel(arcana: CheoneumArcana): string {
+  return arcana === 'sinpae' ? '신패' : '진패';
+}
+
+function getCardNumber(card: CheoneumCard): string {
+  return String(card.number).padStart(2, '0');
+}
+
+function getRomanNumeral(value: number): string {
+  const roman = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
+  return roman[value - 1] ?? String(value);
+}
+
+function CheoneumCardTile({ item, compact = false }: { item: CheoneumPlacedCard; compact?: boolean }) {
+  const { card } = item;
+  const isHidden = item.orientation === 'hidden';
+  const imageSource = card.image ? CHEONEUM_CARD_IMAGES[card.image] : undefined;
+  const displayName = card.hanja ?? card.name;
+  const subLabel = card.ganji
+    ? `${getArcanaLabel(card.arcana)} · ${card.ganji}`
+    : getArcanaLabel(card.arcana);
+
+  if (imageSource && !isHidden) {
+    return (
+      <View style={[styles.cheoneumImageCardShell, compact && styles.cheoneumImageCardShellCompact]}>
+        <ImageBackground source={imageSource} style={styles.cheoneumImageCard} imageStyle={styles.cheoneumImage}>
+          <View style={styles.cheoneumImageTop}>
+            <Text style={styles.cheoneumRoman}>{getRomanNumeral(card.number)}</Text>
+          </View>
+          <View style={styles.cheoneumImageBottom}>
+            <Text style={styles.cheoneumImageName} numberOfLines={1} adjustsFontSizeToFit>
+              {displayName}
+            </Text>
+          </View>
+        </ImageBackground>
+      </View>
+    );
+  }
+
+  return (
+    <View style={[
+      styles.cheoneumCard,
+      card.arcana === 'jinpae' && styles.cheoneumCardJinpae,
+      compact && styles.cheoneumCardCompact,
+      isHidden && styles.cheoneumCardHidden,
+    ]}>
+      <View style={styles.cheoneumCardTop}>
+        <Text style={styles.cheoneumCardIndex}>{getCardNumber(card)}</Text>
+        <Text style={styles.cheoneumCardArcana}>{subLabel}</Text>
+      </View>
+      <View style={styles.cheoneumGlyph}>
+        <Text style={styles.cheoneumGlyphText}>{isHidden ? '封' : displayName.slice(0, 1)}</Text>
+      </View>
+      <Text style={styles.cheoneumCardName} numberOfLines={1} adjustsFontSizeToFit>
+        {isHidden ? '덮은 패' : displayName}
+      </Text>
+      {!!card.hanja && !isHidden && !imageSource && (
+        <Text style={styles.cheoneumCardHanja} numberOfLines={1}>
+          {card.hanja}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function getCardByPosition(reading: CheoneumReading, position: string): CheoneumPlacedCard | undefined {
+  return reading.cards.find(item => item.position === position);
+}
+
+function CheoneumSpreadCards({ reading }: { reading: CheoneumReading }) {
+  if (reading.spread === 'ilgi') {
+    const card = reading.cards[0];
+    return (
+      <View style={styles.cheoneumSingleLayout}>
+        {!!card && <CheoneumCardTile item={card} />}
+      </View>
+    );
+  }
+
+  if (reading.spread === 'yangeui') {
+    const left = getCardByPosition(reading, 'left-yin') ?? reading.cards[0];
+    const right = getCardByPosition(reading, 'right-yang') ?? reading.cards[1];
+    return (
+      <View style={styles.cheoneumTwoLayout}>
+        {!!left && <CheoneumCardTile item={left} compact />}
+        {!!right && <CheoneumCardTile item={right} compact />}
+      </View>
+    );
+  }
+
+  if (reading.spread === 'tonggwan') {
+    const subjectA = getCardByPosition(reading, 'subject-a') ?? reading.cards[0];
+    const subjectB = getCardByPosition(reading, 'subject-b') ?? reading.cards[1];
+    const key = getCardByPosition(reading, 'tonggwan-key') ?? reading.cards[2];
+    return (
+      <View style={styles.cheoneumTonggwanLayout}>
+        <View style={styles.cheoneumKeyWrap}>
+          {!!key && <CheoneumCardTile item={key} compact />}
+        </View>
+        <View style={styles.cheoneumTwoLayout}>
+          {!!subjectA && <CheoneumCardTile item={subjectA} compact />}
+          {!!subjectB && <CheoneumCardTile item={subjectB} compact />}
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.cheoneumGridLayout}>
+      {reading.cards.map(item => (
+        <CheoneumCardTile key={`${item.position}-${item.drawIndex}`} item={item} compact />
+      ))}
+    </View>
+  );
+}
+
+function getDrawBackCount(reading: CheoneumReading): number {
+  if (reading.spread === 'ilgi') return 5;
+  if (reading.spread === 'yangeui' || reading.spread === 'tonggwan') return 7;
+  return Math.min(9, Math.max(5, reading.cards.length));
+}
+
+function getSelectedBackIndex(count: number, reading: CheoneumReading): number {
+  const firstDraw = reading.cards[0]?.drawIndex ?? 1;
+  return Math.max(0, Math.min(count - 1, (firstDraw + reading.cards.length) % count));
+}
+
+function CheoneumDrawOverlay({ reading, onDone }: { reading: CheoneumReading; onDone: () => void }) {
+  const backCount = getDrawBackCount(reading);
+  const selectedIndex = getSelectedBackIndex(backCount, reading);
+  const overlayOpacity = useRef(new Animated.Value(0)).current;
+  const fan = useRef(new Animated.Value(0)).current;
+  const select = useRef(new Animated.Value(0)).current;
+  const reveal = useRef(new Animated.Value(0)).current;
+  const doneRef = useRef(false);
+
+  useEffect(() => {
+    const finish = () => {
+      if (doneRef.current) return;
+      doneRef.current = true;
+      onDone();
+    };
+
+    Animated.sequence([
+      Animated.timing(overlayOpacity, { toValue: 1, duration: 180, useNativeDriver: true }),
+      Animated.delay(160),
+      Animated.timing(fan, {
+        toValue: 1,
+        duration: 760,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.delay(360),
+      Animated.timing(select, {
+        toValue: 1,
+        duration: 620,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.delay(180),
+      Animated.timing(reveal, {
+        toValue: 1,
+        duration: 440,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.delay(700),
+      Animated.timing(overlayOpacity, { toValue: 0, duration: 260, useNativeDriver: true }),
+    ]).start(finish);
+
+    return () => {
+      finish();
+    };
+  }, [fan, onDone, overlayOpacity, reveal, select]);
+
+  const center = (backCount - 1) / 2;
+  const deckOpacity = reveal.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 0],
+  });
+  const revealScale = reveal.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0.88, 1],
+  });
+
+  return (
+    <Animated.View pointerEvents="none" style={[styles.cheoneumOverlay, { opacity: overlayOpacity }]}>
+      <View style={styles.cheoneumOverlayScrim} />
+      <View style={styles.cheoneumOverlayStage}>
+        <Animated.View style={[styles.cheoneumOverlayFan, { opacity: deckOpacity }]}>
+        {Array.from({ length: backCount }).map((_, index) => {
+          const offset = index - center;
+          const isSelected = index === selectedIndex;
+          const selectLift = isSelected
+            ? select.interpolate({ inputRange: [0, 1], outputRange: [0, -54] })
+            : 0;
+          const selectScale = isSelected
+            ? select.interpolate({ inputRange: [0, 1], outputRange: [1, 1.18] })
+            : 1;
+          const ringOpacity = isSelected
+            ? select.interpolate({ inputRange: [0, 0.35, 1], outputRange: [0, 1, 1] })
+            : 0;
+          return (
+            <Animated.View
+              key={index}
+              style={[
+                styles.cheoneumBackWrap,
+                {
+                  transform: [
+                    {
+                      translateX: fan.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [offset * 3, offset * 27],
+                      }),
+                    },
+                    {
+                      translateY: fan.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0, Math.abs(offset) * 5],
+                      }),
+                    },
+                    { translateY: selectLift },
+                    {
+                      rotate: fan.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [`${offset * 0.8}deg`, `${offset * 7}deg`],
+                      }),
+                    },
+                    { scale: selectScale },
+                  ],
+                },
+              ]}
+            >
+              <Image source={CHEONEUM_CARD_BACK} style={styles.cheoneumBackImage} />
+              {isSelected && <Animated.View style={[styles.cheoneumSelectionRing, { opacity: ringOpacity }]} />}
+            </Animated.View>
+          );
+        })}
+        </Animated.View>
+        <Animated.View
+          style={[
+            styles.cheoneumOverlayReveal,
+            {
+              opacity: reveal,
+              transform: [{ scale: revealScale }],
+            },
+          ]}
+        >
+          {!!reading.cards[0] && <CheoneumCardTile item={reading.cards[0]} />}
+        </Animated.View>
+      </View>
+    </Animated.View>
+  );
+}
+
+function CheoneumSpreadView({ reading }: { reading: CheoneumReading }) {
+  return (
+    <View style={styles.cheoneumPanel}>
+      <View style={styles.cheoneumHeader}>
+        <View style={styles.cheoneumBadge}>
+          <Text style={styles.cheoneumBadgeText}>{reading.spreadName}</Text>
+        </View>
+      </View>
+      <CheoneumSpreadCards reading={reading} />
     </View>
   );
 }
@@ -364,8 +725,24 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
   const [isTyping, setIsTyping] = useState(false);
   const [defenseLocked, setDefenseLocked] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [drawOverlay, setDrawOverlay] = useState<CheoneumReading | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const nudgeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const drawResolveRef = useRef<(() => void) | null>(null);
+
+  const playCheoneumDraw = useCallback((reading: CheoneumReading): Promise<void> => {
+    return new Promise(resolve => {
+      drawResolveRef.current = resolve;
+      setDrawOverlay(reading);
+    });
+  }, []);
+
+  const finishCheoneumDraw = useCallback(() => {
+    setDrawOverlay(null);
+    const resolve = drawResolveRef.current;
+    drawResolveRef.current = null;
+    resolve?.();
+  }, []);
 
   const checkNudge = useCallback(async () => {
     try {
@@ -460,6 +837,27 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
         setDefenseLocked(false);
       }
 
+      const cheoneum = !isDefense ? data.cheoneum : undefined;
+      if (cheoneum) {
+        setMessages(prev => [...prev, {
+          id: `${Date.now()}_cheoneum_prelude`,
+          role: 'mook',
+          text: getCheoneumPrelude(aspect, cheoneum),
+          kind: 'normal',
+        }]);
+        await wait(520);
+        await playCheoneumDraw(cheoneum);
+        await wait(180);
+        setMessages(prev => [...prev, {
+          id: `${Date.now()}_cheoneum`,
+          role: 'mook',
+          text: '',
+          kind: 'cheoneum',
+          cheoneum,
+        }]);
+        await wait(360);
+      }
+
       for (let i = 0; i < chunks.length; i += 1) {
         if (i > 0) {
           await wait(
@@ -517,6 +915,17 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
             ) : null
           }
           renderItem={({ item }) => {
+            if (item.kind === 'cheoneum' && item.cheoneum) {
+              return (
+                <View style={styles.rowMook}>
+                  <View style={styles.avatarSm}>
+                    <Image source={aspectCopy.avatarImage} style={styles.avatarSmImage} />
+                  </View>
+                  <CheoneumSpreadView reading={item.cheoneum} />
+                </View>
+              );
+            }
+
             const isDefense = item.kind === 'defense';
             return (
               <View style={item.role === 'user' ? styles.rowUser : styles.rowMook}>
@@ -582,6 +991,7 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+      {drawOverlay && <CheoneumDrawOverlay reading={drawOverlay} onDone={finishCheoneumDraw} />}
     </View>
   );
 }
@@ -779,6 +1189,218 @@ const styles = StyleSheet.create({
     color: COLORS.gold,
     letterSpacing: 0.5,
     marginBottom: 5,
+  },
+  cheoneumPanel: {
+    width: '78%',
+    borderRadius: 14,
+    borderWidth: 0.8,
+    borderColor: 'rgba(201, 169, 110, 0.42)',
+    backgroundColor: 'rgba(18, 15, 11, 0.94)',
+    padding: 12,
+  },
+  cheoneumHeader: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginBottom: 10,
+  },
+  cheoneumBadge: {
+    minWidth: 42,
+    minHeight: 24,
+    borderRadius: 12,
+    borderWidth: 0.6,
+    borderColor: 'rgba(201, 169, 110, 0.5)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  cheoneumBadgeText: {
+    fontSize: 10,
+    color: COLORS.gold,
+  },
+  cheoneumSingleLayout: {
+    alignItems: 'center',
+  },
+  cheoneumTwoLayout: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  cheoneumTonggwanLayout: {
+    gap: 8,
+  },
+  cheoneumKeyWrap: {
+    alignItems: 'center',
+  },
+  cheoneumGridLayout: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  cheoneumOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cheoneumOverlayScrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(7, 5, 3, 0.56)',
+  },
+  cheoneumOverlayStage: {
+    width: '100%',
+    minHeight: 330,
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  cheoneumOverlayFan: {
+    width: '100%',
+    minHeight: 240,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cheoneumOverlayReveal: {
+    position: 'absolute',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cheoneumBackWrap: {
+    position: 'absolute',
+    width: 96,
+    aspectRatio: 0.68,
+    borderRadius: 10,
+    borderWidth: 0.9,
+    borderColor: 'rgba(229, 194, 117, 0.62)',
+    backgroundColor: '#0B0907',
+    overflow: 'hidden',
+  },
+  cheoneumBackImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 9,
+  },
+  cheoneumSelectionRing: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 8,
+    borderWidth: 2,
+    borderColor: 'rgba(245, 213, 141, 0.95)',
+    backgroundColor: 'rgba(245, 213, 141, 0.08)',
+  },
+  cheoneumCard: {
+    width: 112,
+    minHeight: 158,
+    borderRadius: 8,
+    borderWidth: 0.7,
+    borderColor: 'rgba(201, 169, 110, 0.5)',
+    backgroundColor: '#241B12',
+    padding: 9,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  cheoneumCardCompact: {
+    flex: 1,
+    width: undefined,
+    minWidth: 0,
+    minHeight: 142,
+  },
+  cheoneumCardJinpae: {
+    borderColor: 'rgba(139, 150, 135, 0.58)',
+    backgroundColor: '#1A1D17',
+  },
+  cheoneumCardHidden: {
+    backgroundColor: '#161410',
+    borderColor: 'rgba(122, 96, 64, 0.62)',
+  },
+  cheoneumImageCardShell: {
+    width: 118,
+    aspectRatio: 0.68,
+    borderRadius: 9,
+    borderWidth: 1.2,
+    borderColor: 'rgba(229, 194, 117, 0.85)',
+    backgroundColor: '#0B0907',
+    overflow: 'hidden',
+  },
+  cheoneumImageCardShellCompact: {
+    flex: 1,
+    width: undefined,
+    minWidth: 0,
+  },
+  cheoneumImageCard: {
+    flex: 1,
+    justifyContent: 'space-between',
+  },
+  cheoneumImage: {
+    borderRadius: 7,
+  },
+  cheoneumImageTop: {
+    minHeight: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(5, 4, 3, 0.38)',
+    borderBottomWidth: 0.5,
+    borderColor: 'rgba(229, 194, 117, 0.45)',
+  },
+  cheoneumRoman: {
+    color: '#F3D58D',
+    fontSize: 12,
+    letterSpacing: 0.8,
+  },
+  cheoneumImageBottom: {
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 7,
+    backgroundColor: 'rgba(5, 4, 3, 0.56)',
+    borderTopWidth: 0.5,
+    borderColor: 'rgba(229, 194, 117, 0.45)',
+  },
+  cheoneumImageName: {
+    width: '100%',
+    color: '#F5E8C6',
+    fontSize: 15,
+    textAlign: 'center',
+  },
+  cheoneumCardTop: {
+    width: '100%',
+    minHeight: 28,
+    alignItems: 'center',
+  },
+  cheoneumCardIndex: {
+    fontSize: 10,
+    color: COLORS.gold,
+  },
+  cheoneumCardArcana: {
+    fontSize: 9,
+    color: '#9D8358',
+    marginTop: 1,
+  },
+  cheoneumGlyph: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 0.7,
+    borderColor: 'rgba(201, 169, 110, 0.38)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(201, 169, 110, 0.08)',
+    marginVertical: 6,
+  },
+  cheoneumGlyphText: {
+    fontSize: 22,
+    color: COLORS.text,
+  },
+  cheoneumCardName: {
+    width: '100%',
+    minHeight: 20,
+    fontSize: 13,
+    color: COLORS.white,
+    textAlign: 'center',
+  },
+  cheoneumCardHanja: {
+    width: '100%',
+    minHeight: 15,
+    fontSize: 10,
+    color: '#B89C6D',
+    textAlign: 'center',
   },
 
   quickWrap: {

@@ -1,3 +1,3 @@
 export type ConsultationAspect = "hwaseon" | "hwayeong";
 
-export type AiProvider = "gemini" | "claude";
+export type AiProvider = "gemini" | "claude" | "openai";

@@ -29,6 +29,66 @@ function extractClaudeText(responseBody: any): string | null {
   return text.length > 0 ? text : null;
 }
 
+function extractOpenAIText(responseBody: any): string | null {
+  if (typeof responseBody?.output_text === "string") {
+    const directText = responseBody.output_text.trim();
+    if (directText.length > 0) return directText;
+  }
+
+  const output = Array.isArray(responseBody?.output) ? responseBody.output : [];
+  const textParts: string[] = [];
+
+  for (const item of output) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const contentItem of content) {
+      if (
+        (contentItem?.type === "output_text" || contentItem?.type === "text") &&
+        typeof contentItem.text === "string"
+      ) {
+        textParts.push(contentItem.text);
+      }
+    }
+  }
+
+  const text = textParts.join("").trim();
+  return text.length > 0 ? text : null;
+}
+
+async function getOpenAIChatResponse(
+  systemPrompt: string,
+  userMessage: string,
+): Promise<string | null> {
+  const API_KEY = process.env.OPENAI_API_KEY;
+  if (!API_KEY) {
+    console.error("[MookA] OPENAI_API_KEY가 .env에 설정되지 않았습니다.");
+    return null;
+  }
+
+  const model = process.env.OPENAI_MODEL || "gpt-5.5";
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      instructions: systemPrompt,
+      input: userMessage,
+      max_output_tokens: 900,
+    }),
+  });
+
+  const responseBody = await response.json();
+
+  if (!response.ok) {
+    console.error("[MookA] OpenAI 응답 생성 실패:", response.status, responseBody);
+    return null;
+  }
+
+  return extractOpenAIText(responseBody);
+}
+
 async function getGeminiChatResponse(
   systemPrompt: string,
   userMessage: string,
@@ -153,6 +213,10 @@ export const getMookAChatResponse = async (
 
     if (provider === "claude") {
       return await getClaudeChatResponse(systemPrompt, userMessage);
+    }
+
+    if (provider === "openai") {
+      return await getOpenAIChatResponse(systemPrompt, userMessage);
     }
 
     throw new Error(`지원하지 않는 AI provider입니다: ${provider}`);
