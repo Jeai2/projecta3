@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "kbo-fortune",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["D:\\kbo-fortune\\dist\\server.js"],
+      "port": 3002
+    }
+  ]
+}

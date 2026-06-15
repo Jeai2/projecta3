@@ -268,15 +268,20 @@ export const generateFortuneWithCompatibility = (
 
   const specialHarmonyText =
     analysis.specialHarmony.length > 0
-      ? `특히 ${analysis.specialHarmony.join(", ")} 기운이 함께합니다.`
+      ? `특히 ${analysis.specialHarmony
+          .map((h) => h.label || `${h.base}${h.target}`)
+          .join(", ")} 기운이 함께합니다.`
       : "";
+
+  const hasDaewoonInfo =
+    !!analysis.daewoonEffect && analysis.daewoonEffect !== "대운 정보 없음";
 
   const general = [
     tenGodMessage,
     analysis.ganRelation,
     analysis.jiRelation,
     specialHarmonyText,
-    analysis.daewoonEffect ? `대운 영향: ${analysis.daewoonEffect}.` : "",
+    hasDaewoonInfo ? `대운 영향: ${analysis.daewoonEffect}.` : "",
   ]
     .filter(Boolean)
     .join(" ")
@@ -335,7 +340,7 @@ export const generateFortuneWithCompatibility = (
     : "문서 업무가 부담스럽게 느껴질 수 있습니다. 체크리스트를 활용해 놓치는 부분이 없도록 하세요.";
 
   const advice = [
-    analysis.daewoonEffect,
+    hasDaewoonInfo ? analysis.daewoonEffect : "",
     isVeryPositive
       ? "이 기회를 놓치지 말고 적극적으로 움직이세요."
       : isPositive

@@ -33,6 +33,7 @@ import {
   touchSession,
   trackCategories,
   updateCheoneumSessionState,
+  type ConversationMessage,
 } from "../services/session.service";
 import { buildDefenseReply, buildDefenseReturnReply, decideDefense } from "../services/defense.service";
 import { createCheoneumReading, getCheoneumCardCounts } from "../cheoneum/cheoneum.service";
@@ -59,6 +60,72 @@ interface FortuneRequestBody {
 interface ErrorResponseBody {
   error: true;
   message: string;
+}
+
+interface ContinuationContext {
+  lastAssistant: string;
+  lastUser?: string;
+  message: string;
+}
+
+const CONTINUATION_QUESTION_PATTERN =
+  /(무슨\s*(뜻|말)|뭐라는|뭐야|뭐\??|어떤\s*뜻|어떤\s*말|그게|그건|방금|아까|정면|다만|근데|그래서|그\s*다음|계속|이어|마저|더\s*말|설명|풀어|왜)/i;
+const NEW_READING_REQUEST_PATTERN =
+  /(새로\s*봐|다시\s*봐|처음부터|카드\s*(뽑|열|펼)|패를\s*(뽑|열|펼)|운세|점\s*봐|할까|말까|선택|스프레드)/i;
+
+function normalizeShortText(message: string): string {
+  return message.trim().replace(/\s+/g, " ");
+}
+
+function getLastMessage(history: ConversationMessage[], role: ConversationMessage["role"]): ConversationMessage | undefined {
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    if (history[i].role === role) return history[i];
+  }
+  return undefined;
+}
+
+function truncateForPrompt(value: string, limit: number): string {
+  const normalized = normalizeShortText(value);
+  return normalized.length <= limit ? normalized : `${normalized.slice(0, limit)}...`;
+}
+
+function detectContinuationQuestion(message: string, history: ConversationMessage[]): ContinuationContext | null {
+  const normalized = normalizeShortText(message);
+  if (!normalized) return null;
+  if (NEW_READING_REQUEST_PATTERN.test(normalized)) return null;
+
+  const lastAssistant = getLastMessage(history, "assistant");
+  if (!lastAssistant || lastAssistant.content.length < 20) return null;
+
+  const lastMessage = history[history.length - 1];
+  if (lastMessage?.role !== "assistant") return null;
+
+  const compactLength = normalized.replace(/[^\p{L}\p{N}]/gu, "").length;
+  const asksFollowUp =
+    CONTINUATION_QUESTION_PATTERN.test(normalized) ||
+    (compactLength <= 14 && /[?？]$/.test(normalized)) ||
+    /^(응|어|왜|뭐|그래서|그게|그건|계속|다음)[?？.!…\s]*$/i.test(normalized);
+
+  if (!asksFollowUp) return null;
+
+  return {
+    lastAssistant: lastAssistant.content,
+    lastUser: getLastMessage(history.slice(0, -1), "user")?.content,
+    message: normalized,
+  };
+}
+
+function buildContinuationInsight(context: ContinuationContext, lastSpread: string | null): string {
+  return `[직전 답변 이어가기]
+- 사용자는 새 점사나 새 카드를 요청한 것이 아니라, 직전 답변에서 끊기거나 애매했던 표현을 되물었다.
+- 새 카드, 새 스프레드, 새 결론을 만들지 말고 직전 답변의 문맥을 그대로 이어서 설명한다.
+- 직전 스프레드: ${lastSpread ?? "알 수 없음"}
+- 직전 사용자 질문: ${context.lastUser ? truncateForPrompt(context.lastUser, 160) : "없음"}
+- 직전 상담자 답변: ${truncateForPrompt(context.lastAssistant, 520)}
+- 현재 사용자 후속 질문: ${context.message}
+- 답변은 현재 질문의 단어를 바로 받아서 시작한다. 예: "정면이라는 건..." / "다만이라는 건..."
+- "말만으로는 흐름을 잡기 어렵다", "조금 더 구체적으로 말해달라"처럼 새 질문을 요구하지 않는다.
+- 직전 답변이 문장 중간에서 끊긴 것처럼 보이면, 끊긴 단어 뒤를 자연스럽게 보충해서 2~4문장으로 마무리한다.`;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -298,7 +365,14 @@ export const getMookAFortuneAPI = async (
     if (RESET_PATTERN.test(combinedMessage)) {
       manualReset(sessionUserId);
     }
+    const conversationHistory = getConversationHistory(sessionUserId);
+    const continuationContext = detectContinuationQuestion(combinedMessage, conversationHistory);
     const defenseDecision = decideDefense(combinedMessage, getDefenseStatus(sessionUserId));
+    const shouldBypassDefenseForContinuation =
+      !!continuationContext &&
+      (defenseDecision.action === "allow" ||
+        (defenseDecision.action === "defend" && defenseDecision.incidentType === "vague"));
+
     if (defenseDecision.action === "return") {
       appendConversationMessage(sessionUserId, "user", combinedMessage);
       const defenseStatus = releaseDefense(sessionUserId);
@@ -316,7 +390,7 @@ export const getMookAFortuneAPI = async (
       });
     }
 
-    if (defenseDecision.action === "defend") {
+    if (defenseDecision.action === "defend" && !shouldBypassDefenseForContinuation) {
       appendConversationMessage(sessionUserId, "user", combinedMessage);
       const defenseStatus = recordDefenseIncident(sessionUserId, defenseDecision.incidentType);
       const reply = buildDefenseReply(aspect, defenseDecision.incidentType, defenseStatus);
@@ -332,11 +406,10 @@ export const getMookAFortuneAPI = async (
       });
     }
 
-    if (defenseDecision.releaseDefense) {
+    if (defenseDecision.action === "allow" && defenseDecision.releaseDefense) {
       releaseDefense(sessionUserId);
     }
 
-    const conversationHistory = getConversationHistory(sessionUserId);
     appendConversationMessage(sessionUserId, "user", combinedMessage);
     const isTodayFortuneRequest = TODAY_FORTUNE_PATTERN.test(combinedMessage.trim());
     const hasDirectReadingProfile = ENABLE_PROFILE_BASED_READING && !!(effectiveBirthDate && effectiveGender);
@@ -524,19 +597,31 @@ export const getMookAFortuneAPI = async (
 
     const categoryTones = matchedCategories.map((c) => c.tone);
     const cheoneumSession = getCheoneumSessionState(sessionUserId);
-    const cheoneumDecision = isTodayFortuneRequest
+    const rawCheoneumDecision = isTodayFortuneRequest
       ? createTodayCheoneumDecision(cheoneumSession)
       : decideCheoneumIntervention({
           message: combinedMessage,
           turnCount,
           session: cheoneumSession,
         });
+    const cheoneumDecision = continuationContext
+      ? {
+          ...rawCheoneumDecision,
+          resonanceDelta: 0,
+          shouldUse: false,
+          spread: undefined,
+          reason: "continue previous answer without drawing a new card",
+          resonanceAfter: cheoneumSession.resonance,
+        }
+      : rawCheoneumDecision;
     let cheoneumReading: ReturnType<typeof createCheoneumReading> | undefined;
     let cheoneumInsight: string | undefined;
 
     if (cheoneumDecision.shouldUse && cheoneumDecision.spread) {
       cheoneumReading = createCheoneumReading({ aspect, spread: cheoneumDecision.spread });
-      cheoneumInsight = buildCheoneumInsight(cheoneumReading, cheoneumDecision);
+      cheoneumInsight = buildCheoneumInsight(cheoneumReading, cheoneumDecision, combinedMessage);
+    } else if (continuationContext && cheoneumSession.lastSpread) {
+      cheoneumInsight = buildContinuationInsight(continuationContext, cheoneumSession.lastSpread);
     }
 
     const cheoneumState = updateCheoneumSessionState(sessionUserId, {

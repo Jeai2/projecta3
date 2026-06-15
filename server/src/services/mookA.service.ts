@@ -133,6 +133,21 @@ const FREE_CHAT_BLOCK = `[모드: 일상 대화]
 3. 전체 답변은 3문장을 넘지 말 것.
 4. 한국어로만 답변할 것.`;
 
+const CHEONEUM_CHAT_BLOCK = `[모드: 천음 카드 풀이]
+지금은 사용자의 말에 카드가 실제로 뽑힌 턴이거나, 직전에 뽑힌 카드 풀이를 이어 설명하는 턴이다.
+
+[절대 금지]
+- 생년월일, 태어난 시간을 묻지 마.
+- "사주", "명식", "오행", "일주", "십성" 같은 내부 계산 용어를 사용자에게 직접 늘어놓지 마.
+- 카드명만 보고 의미를 꾸며내지 마.
+
+[필수 지침]
+1. 현재 상담자 현현의 말투를 유지해.
+2. 아래에 제공되는 [천음 카드 의미 씨앗], [천음 점사 계산], [천음 일기 출력 지침], [직전 답변 이어가기]를 우선해서 답해.
+3. 일반 일상 대화의 "3문장 이하" 제한은 이번 턴에는 적용하지 마.
+4. 단, 카카오톡 말풍선으로 읽기 좋게 과하게 길어지지는 말고 핵심을 문단처럼 자연스럽게 나눠 말해.
+5. 한국어로만 답변할 것.`;
+
 const TARGET_PERSON_BLOCK = (name: string) => `[맨션 대상]
 지금 대화의 주인공은 말을 건 사람이 아니라, 메시지 안에 맨션된 '${name}'님이야.
 - 답변할 때 '${name}'님의 이름을 부르면서, 그 사람이 느끼고 있을 감정을 7세 아이의 순수한 시각으로 어루만져줘.
@@ -268,7 +283,7 @@ export const getMookAResponse = async (
   const persona = loadPersona(aspect);
   const aspectConfig = ASPECT_CONFIG[aspect];
   const aspectBlock = buildAspectInstructionBlock(aspect);
-  const modeBlock = hasSaju ? SAJU_MODE_BLOCK(sajuData) : FREE_CHAT_BLOCK;
+  const modeBlock = cheoneumInsight ? CHEONEUM_CHAT_BLOCK : hasSaju ? SAJU_MODE_BLOCK(sajuData) : FREE_CHAT_BLOCK;
   const targetBlock = targetPerson ? `\n\n${TARGET_PERSON_BLOCK(targetPerson)}` : "";
   const seonbongBlock = seonbongInsight ? `\n\n${seonbongInsight}` : "";
   const hasJeongdanInsight = useJeongdan && !!jeongdanInsight;

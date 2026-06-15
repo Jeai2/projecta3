@@ -1,6 +1,14 @@
-import { SIPSIN_TABLE } from "../data/saju.data";
+import { GAN, JI, SIPSIN_TABLE } from "../data/saju.data";
 import { getDayGanji } from "../services/saju.service";
 import type { CheoneumCard, CheoneumReading } from "./cheoneum.types";
+import {
+  getIlgiSipsinPairKey,
+  ILGI_BRANCH_DAY_BRANCH_PAIR_INTERPRETATION,
+  ILGI_CHEONEUM_GAN_SIPSIN_INTERPRETATION,
+  ILGI_INTERPRETATION_FLOW,
+  SIPSIN_NAMES,
+  type SipsinName,
+} from "./cheoneum-ilgi-interpretation.logic";
 
 type GanjiPair = {
   yang: string;
@@ -75,6 +83,67 @@ function calcSipsin(dayGan: string, target: string, type: SipsinType): string | 
   return tableForType[dayGan]?.[target] ?? null;
 }
 
+function toSipsinName(value: string | null): SipsinName | null {
+  if (!value) return null;
+  return (SIPSIN_NAMES as readonly string[]).includes(value) ? (value as SipsinName) : null;
+}
+
+function buildIlgiInterpretationGuide(input: {
+  activeGanSipsin: string | null;
+  activeJiSipsin: string | null;
+  compareJiSipsin: string | null;
+  pairLabel: string;
+}): string | null {
+  const activeGanSipsin = toSipsinName(input.activeGanSipsin);
+  const activeJiSipsin = toSipsinName(input.activeJiSipsin);
+  const compareJiSipsin = toSipsinName(input.compareJiSipsin);
+
+  if (!activeGanSipsin && (!activeJiSipsin || !compareJiSipsin)) return null;
+
+  const ganInterpretation = activeGanSipsin
+    ? ILGI_CHEONEUM_GAN_SIPSIN_INTERPRETATION[activeGanSipsin]
+    : null;
+  const pairKey =
+    activeJiSipsin && compareJiSipsin ? getIlgiSipsinPairKey(activeJiSipsin, compareJiSipsin) : null;
+  const pairInterpretation = pairKey ? ILGI_BRANCH_DAY_BRANCH_PAIR_INTERPRETATION[pairKey] : null;
+
+  return [
+    ganInterpretation
+      ? `  · 천음 천간 해석(${activeGanSipsin}): ${ganInterpretation}`
+      : null,
+    pairKey && pairInterpretation
+      ? `  · ${input.pairLabel} 조합(${pairKey}): ${pairInterpretation}`
+      : pairKey
+        ? `  · ${input.pairLabel} 조합(${pairKey}): 해석 미작성`
+        : null,
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+function getDivinationHourGanji(referenceDate: Date, dayGan: string): string {
+  const hour = referenceDate.getHours();
+  const min = referenceDate.getMinutes();
+  const totalMinutes = hour * 60 + min;
+  const adjustedMinutes = (totalMinutes + 30) % 1440;
+  const hourJiIndex = Math.floor(adjustedMinutes / 120);
+  const hourJi = JI[hourJiIndex];
+
+  const dayGanIndex = GAN.indexOf(dayGan);
+  const startGanIndex = [0, 5].includes(dayGanIndex)
+    ? 0
+    : [1, 6].includes(dayGanIndex)
+      ? 2
+      : [2, 7].includes(dayGanIndex)
+        ? 4
+        : [3, 8].includes(dayGanIndex)
+          ? 6
+          : 8;
+
+  const hourGan = GAN[(startGanIndex + hourJiIndex) % 10];
+  return hourGan + hourJi;
+}
+
 function getSinpaeGanji(card: CheoneumCard, polarity: CheoneumReading["polarity"]): string | null {
   if (card.arcana !== "sinpae") return card.ganji ?? null;
 
@@ -91,6 +160,8 @@ export function buildCheoneumDivinationInsight(
   const ilju = getDayGanji(referenceDate);
   const dayGan = ilju[0];
   const dayJi = ilju[1];
+  const divinationHourGanji = getDivinationHourGanji(referenceDate, dayGan);
+  const hourJi = divinationHourGanji[1];
 
   const lines = reading.cards
     .map((placed) => {
@@ -100,14 +171,54 @@ export function buildCheoneumDivinationInsight(
       const activeGanji = toHanjaGanji(activeGanjiHangul);
       const activeGan = activeGanji[0];
       const activeJi = activeGanji[1];
+      const isYangeui = reading.spread === "yangeui";
+      const isYangeuiRight = reading.spread === "yangeui" && placed.position === "right-yang";
       const activeGanSipsin = calcSipsin(dayGan, activeGan, "h");
       const activeJiSipsin = calcSipsin(dayGan, activeJi, "e");
       const dayJiSipsin = calcSipsin(dayGan, dayJi, "e");
+      const ilgiGuide =
+        reading.spread === "ilgi"
+          ? buildIlgiInterpretationGuide({
+              activeGanSipsin,
+              activeJiSipsin,
+              compareJiSipsin: dayJiSipsin,
+              pairLabel: "천음 지지-점사일 일지",
+            })
+          : null;
+      const yangeuiGuide =
+        isYangeui
+          ? (() => {
+              const compareJi = hourJi;
+              const compareGanji = divinationHourGanji;
+              const compareLabel = "점사시간 지지";
+              const yangeuiGanSipsin = calcSipsin(activeGan, activeGan, "h");
+              const yangeuiJiSipsin = calcSipsin(activeGan, activeJi, "e");
+              const compareJiSipsin = calcSipsin(activeGan, compareJi, "e");
+              const guide = buildIlgiInterpretationGuide({
+                activeGanSipsin: yangeuiGanSipsin,
+                activeJiSipsin: yangeuiJiSipsin,
+                compareJiSipsin,
+                pairLabel: `천음 지지-${compareLabel}`,
+              });
+              const guideTitle = isYangeuiRight
+                ? "양의 오른쪽 패 천간-점사시간 기준"
+                : "양의 왼쪽 패 천간-점사시간 기준";
+
+              return `- ${placed.card.name}(${placed.card.hanja ?? placed.card.name}) / ${placed.label}: ${reading.polarity === "yang" ? "양" : "음"}의 간지 ${activeGanjiHangul}(${activeGanji}) + 점사시간 ${compareGanji}
+  · [${guideTitle}]
+  · 해석 기준: 패의 천간 ${activeGan}를 이 흐름의 일간/나로 둠
+  · 패 천간 ${activeGan} 기준 ${activeGan} = ${yangeuiGanSipsin ?? "미정"}
+  · 패 천간 ${activeGan} 기준 패 지지 ${activeJi} = ${yangeuiJiSipsin ?? "미정"}
+  · 패 천간 ${activeGan} 기준 ${compareLabel} ${compareJi} = ${compareJiSipsin ?? "미정"}${guide ? `\n${guide}` : ""}`;
+            })()
+          : null;
+
+      if (yangeuiGuide) return yangeuiGuide;
 
       return `- ${placed.card.name}(${placed.card.hanja ?? placed.card.name}) / ${placed.label}: ${reading.polarity === "yang" ? "양" : "음"}의 간지 ${activeGanjiHangul}(${activeGanji}) + 점사일 ${ilju}
   · 일간 ${dayGan} 기준 ${activeGan} = ${activeGanSipsin ?? "미정"}
   · 일간 ${dayGan} 기준 ${activeJi} = ${activeJiSipsin ?? "미정"}
-  · 일간 ${dayGan} 기준 점사일 일지 ${dayJi} = ${dayJiSipsin ?? "미정"}`;
+  · 일간 ${dayGan} 기준 점사일 일지 ${dayJi} = ${dayJiSipsin ?? "미정"}${ilgiGuide ? `\n${ilgiGuide}` : ""}`;
     })
     .filter((line): line is string => Boolean(line))
     .join("\n");
@@ -116,9 +227,12 @@ export function buildCheoneumDivinationInsight(
 
   return `[천음 점사 계산]
 - 점사일 일주: ${ilju}
+- 점사시간 시주: ${divinationHourGanji}
 - 해석 기준: 점사일의 천간 ${dayGan}
+${reading.spread === "yangeui" ? `- 양의 해석 기준: 각 패의 천간을 해당 흐름의 일간/나로 둔다. 왼쪽과 오른쪽 모두 각 패 지지를 점사시간 지지와 비교한다.` : ""}
 - 운용: ${reading.polarity === "yang" ? "양의 천음" : "음의 천음"}
 - 계산식: ${reading.polarity === "yang" ? "천음 양간지 + 점사일 일주" : "천음 음간지 + 점사일 일주"}
+${reading.spread === "ilgi" ? `- 일기 해석 흐름: ${ILGI_INTERPRETATION_FLOW.join(" -> ")}` : ""}
 ${lines}
 
 [해석 골격 지침]

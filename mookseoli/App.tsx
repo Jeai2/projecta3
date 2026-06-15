@@ -5,7 +5,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // 로컬 테스트: PC IP 주소. 배포 후 Railway URL로 교체
-const API_URL = 'http://192.168.45.21:3001';
+const API_URL = 'http://192.168.219.102:3001';
 
 const COLORS = {
   bg: '#0E0C0A',
@@ -154,7 +154,7 @@ const CHEONEUM_CARD_IMAGES: Record<string, ImageSourcePropType> = {
 const CHEONEUM_CARD_BACK = require('./assets/cheoneum/card-back-cheoneum.png');
 
 const QUICK = ['오늘의 운세', '점 봐주세요', '이직 고민'];
-const MAX_REPLY_BUBBLES = 4;
+const MAX_REPLY_BUBBLES = 5;
 const MAX_REPLY_BUBBLE_CHARS = 96;
 const MAX_DEFENSE_BUBBLES = 2;
 
@@ -266,10 +266,29 @@ function getDefenseLabel(type?: DefenseType, locked?: boolean): string {
 }
 
 function getCheoneumPrelude(aspect: Aspect, reading: CheoneumReading): string {
+  const ilgiPreludes =
+    aspect === 'hwayeong'
+      ? [
+          '흠... 잠깐만. 카드 하나 뽑아볼게.',
+          '오늘... 음. 한 장 먼저 볼게.',
+          '가만있어 봐. 패를 하나 열어볼게.',
+          '잠깐만. 지금 흐름을 먼저 뽑아볼게.',
+          '음... 이건 한 장으로 먼저 봐야겠네.',
+        ]
+      : [
+          '흠... 잠깐만요. 카드 하나 뽑아볼게요.',
+          '오늘... 음. 한 장 먼저 열어볼게요.',
+          '잠시만요. 지금 흐름을 카드로 볼게요.',
+          '잠깐만요. 패를 하나 먼저 뽑아볼게요.',
+          '음... 이건 한 장으로 먼저 열어볼게요.',
+        ];
+
+  if (reading.spread === 'ilgi') {
+    return ilgiPreludes[Math.floor(Math.random() * ilgiPreludes.length)];
+  }
+
   if (aspect === 'hwayeong') {
     switch (reading.spread) {
-      case 'ilgi':
-        return '잠깐. 내가 먼저 한 장 뽑아볼게.';
       case 'yangeui':
         return '두 갈래로 나눠서 볼게. 패를 열어보자.';
       case 'tonggwan':
@@ -280,8 +299,6 @@ function getCheoneumPrelude(aspect: Aspect, reading: CheoneumReading): string {
   }
 
   switch (reading.spread) {
-    case 'ilgi':
-      return '좋아요. 지금 흐름을 카드 한 장으로 열어볼게요.';
     case 'yangeui':
       return '좋아요. 두 방향을 나눠서 한 번 알아볼게요.';
     case 'tonggwan':
@@ -444,20 +461,40 @@ function CheoneumSpreadCards({ reading }: { reading: CheoneumReading }) {
 }
 
 function getDrawBackCount(reading: CheoneumReading): number {
-  if (reading.spread === 'ilgi') return 5;
-  if (reading.spread === 'yangeui' || reading.spread === 'tonggwan') return 7;
-  return Math.min(9, Math.max(5, reading.cards.length));
+  return 12;
 }
 
-function getSelectedBackIndex(count: number, reading: CheoneumReading): number {
-  const firstDraw = reading.cards[0]?.drawIndex ?? 1;
-  return Math.max(0, Math.min(count - 1, (firstDraw + reading.cards.length) % count));
+function getCardSeed(item?: CheoneumPlacedCard): number {
+  const value = item ? `${item.card.id}-${item.card.number}-${item.drawIndex}` : 'cheoneum';
+  return value.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0);
+}
+
+function getSelectedBackIndices(count: number, reading: CheoneumReading): number[] {
+  if (reading.spread === 'yangeui' && reading.cards.length >= 2) {
+    const leftSeed = getCardSeed(getCardByPosition(reading, 'left-yin') ?? reading.cards[0]);
+    const rightSeed = getCardSeed(getCardByPosition(reading, 'right-yang') ?? reading.cards[1]);
+    const leftIndex = 2 + (leftSeed % 3);
+    let rightIndex = Math.min(count - 2, 7 + (rightSeed % 3));
+
+    if (rightIndex === leftIndex) {
+      rightIndex = Math.min(count - 1, rightIndex + 1);
+    }
+
+    return [leftIndex, rightIndex];
+  }
+
+  const seed = getCardSeed(reading.cards[0]);
+  return [Math.max(0, Math.min(count - 1, seed % count))];
 }
 
 function CheoneumDrawOverlay({ reading, onDone }: { reading: CheoneumReading; onDone: () => void }) {
   const backCount = getDrawBackCount(reading);
-  const selectedIndex = getSelectedBackIndex(backCount, reading);
+  const selectedIndices = getSelectedBackIndices(backCount, reading);
+  const isYangeuiDraw = reading.spread === 'yangeui' && reading.cards.length >= 2;
+  const yangeuiLeft = getCardByPosition(reading, 'left-yin') ?? reading.cards[0];
+  const yangeuiRight = getCardByPosition(reading, 'right-yang') ?? reading.cards[1];
   const overlayOpacity = useRef(new Animated.Value(0)).current;
+  const shuffle = useRef(new Animated.Value(0)).current;
   const fan = useRef(new Animated.Value(0)).current;
   const select = useRef(new Animated.Value(0)).current;
   const reveal = useRef(new Animated.Value(0)).current;
@@ -471,36 +508,43 @@ function CheoneumDrawOverlay({ reading, onDone }: { reading: CheoneumReading; on
     };
 
     Animated.sequence([
-      Animated.timing(overlayOpacity, { toValue: 1, duration: 180, useNativeDriver: true }),
-      Animated.delay(160),
+      Animated.timing(overlayOpacity, { toValue: 1, duration: 240, useNativeDriver: true }),
+      Animated.delay(260),
+      Animated.timing(shuffle, {
+        toValue: 1,
+        duration: 1280,
+        easing: Easing.inOut(Easing.cubic),
+        useNativeDriver: true,
+      }),
+      Animated.delay(260),
       Animated.timing(fan, {
         toValue: 1,
-        duration: 760,
+        duration: 1120,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
-      Animated.delay(360),
+      Animated.delay(520),
       Animated.timing(select, {
         toValue: 1,
-        duration: 620,
+        duration: 920,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
-      Animated.delay(180),
+      Animated.delay(520),
       Animated.timing(reveal, {
         toValue: 1,
-        duration: 440,
+        duration: 680,
         easing: Easing.out(Easing.cubic),
         useNativeDriver: true,
       }),
-      Animated.delay(700),
-      Animated.timing(overlayOpacity, { toValue: 0, duration: 260, useNativeDriver: true }),
+      Animated.delay(840),
+      Animated.timing(overlayOpacity, { toValue: 0, duration: 320, useNativeDriver: true }),
     ]).start(finish);
 
     return () => {
       finish();
     };
-  }, [fan, onDone, overlayOpacity, reveal, select]);
+  }, [fan, onDone, overlayOpacity, reveal, select, shuffle]);
 
   const center = (backCount - 1) / 2;
   const deckOpacity = reveal.interpolate({
@@ -519,12 +563,48 @@ function CheoneumDrawOverlay({ reading, onDone }: { reading: CheoneumReading; on
         <Animated.View style={[styles.cheoneumOverlayFan, { opacity: deckOpacity }]}>
         {Array.from({ length: backCount }).map((_, index) => {
           const offset = index - center;
-          const isSelected = index === selectedIndex;
+          const selectionOrder = selectedIndices.indexOf(index);
+          const isSelected = selectionOrder >= 0;
+          const shuffleDirection = index % 2 === 0 ? -1 : 1;
+          const shuffleDepth = 1 + (index % 4) * 0.18;
+          const shuffleX = shuffle.interpolate({
+            inputRange: [0, 0.28, 0.58, 1],
+            outputRange: [
+              offset * 1.2,
+              shuffleDirection * 34 * shuffleDepth,
+              -shuffleDirection * 22 * shuffleDepth,
+              offset * 2.2,
+            ],
+          });
+          const shuffleY = shuffle.interpolate({
+            inputRange: [0, 0.28, 0.58, 1],
+            outputRange: [
+              0,
+              (index % 3 - 1) * 12,
+              (1 - index % 3) * 9,
+              0,
+            ],
+          });
+          const shuffleRotate = shuffle.interpolate({
+            inputRange: [0, 0.28, 0.58, 1],
+            outputRange: [
+              `${offset * 0.35}deg`,
+              `${shuffleDirection * (7 + (index % 3) * 2)}deg`,
+              `${-shuffleDirection * (5 + (index % 4))}deg`,
+              `${offset * 0.55}deg`,
+            ],
+          });
           const selectLift = isSelected
-            ? select.interpolate({ inputRange: [0, 1], outputRange: [0, -54] })
+            ? select.interpolate({ inputRange: [0, 1], outputRange: [0, isYangeuiDraw ? -46 : -54] })
+            : 0;
+          const selectX = isSelected
+            ? select.interpolate({
+                inputRange: [0, 1],
+                outputRange: [0, isYangeuiDraw ? (selectionOrder === 0 ? -58 : 58) : 0],
+              })
             : 0;
           const selectScale = isSelected
-            ? select.interpolate({ inputRange: [0, 1], outputRange: [1, 1.18] })
+            ? select.interpolate({ inputRange: [0, 1], outputRange: [1, isYangeuiDraw ? 1.12 : 1.18] })
             : 1;
           const ringOpacity = isSelected
             ? select.interpolate({ inputRange: [0, 0.35, 1], outputRange: [0, 1, 1] })
@@ -535,24 +615,31 @@ function CheoneumDrawOverlay({ reading, onDone }: { reading: CheoneumReading; on
               style={[
                 styles.cheoneumBackWrap,
                 {
+                  zIndex: isSelected ? 40 + selectionOrder : index,
                   transform: [
+                    { translateX: shuffleX },
+                    { translateY: shuffleY },
                     {
                       translateX: fan.interpolate({
                         inputRange: [0, 1],
-                        outputRange: [offset * 3, offset * 27],
+                        outputRange: [0, offset * 20.8],
                       }),
                     },
                     {
                       translateY: fan.interpolate({
                         inputRange: [0, 1],
-                        outputRange: [0, Math.abs(offset) * 5],
+                        outputRange: [0, Math.abs(offset) * 4.4],
                       }),
                     },
+                    { translateX: selectX },
                     { translateY: selectLift },
+                    {
+                      rotate: shuffleRotate,
+                    },
                     {
                       rotate: fan.interpolate({
                         inputRange: [0, 1],
-                        outputRange: [`${offset * 0.8}deg`, `${offset * 7}deg`],
+                        outputRange: ['0deg', `${offset * 5.25}deg`],
                       }),
                     },
                     { scale: selectScale },
@@ -569,13 +656,21 @@ function CheoneumDrawOverlay({ reading, onDone }: { reading: CheoneumReading; on
         <Animated.View
           style={[
             styles.cheoneumOverlayReveal,
+            isYangeuiDraw && styles.cheoneumOverlayRevealPair,
             {
               opacity: reveal,
               transform: [{ scale: revealScale }],
             },
           ]}
         >
-          {!!reading.cards[0] && <CheoneumCardTile item={reading.cards[0]} />}
+          {isYangeuiDraw ? (
+            <>
+              {!!yangeuiLeft && <CheoneumCardTile item={yangeuiLeft} compact />}
+              {!!yangeuiRight && <CheoneumCardTile item={yangeuiRight} compact />}
+            </>
+          ) : (
+            !!reading.cards[0] && <CheoneumCardTile item={reading.cards[0]} />
+          )}
         </Animated.View>
       </View>
     </Animated.View>
@@ -1262,6 +1357,12 @@ const styles = StyleSheet.create({
     position: 'absolute',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  cheoneumOverlayRevealPair: {
+    width: '76%',
+    maxWidth: 280,
+    flexDirection: 'row',
+    gap: 10,
   },
   cheoneumBackWrap: {
     position: 'absolute',
