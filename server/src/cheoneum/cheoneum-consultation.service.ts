@@ -5,6 +5,7 @@ import {
   CHEONEUM_SINPAE_MEANINGS,
   type CheoneumReadingContext,
 } from "./cheoneum-interpretation.data";
+import { CHEONEUM_JINPAE_MEANINGS } from "./cheoneum-jinpae-interpretation.data";
 
 export type CheoneumInputType =
   | "greeting"
@@ -411,13 +412,12 @@ function buildCheoneumCardMeaningInsight(
   const context = getCheoneumReadingContext(decision, question);
   const lines = reading.cards
     .map((placed) => {
-      if (placed.card.arcana !== "sinpae") {
-        return `- ${placed.card.name} / ${placed.label}: 진패 의미 씨앗은 아직 연결되지 않음`;
-      }
-
-      const meaning = CHEONEUM_SINPAE_MEANINGS[placed.card.id];
+      const isSinpae = placed.card.arcana === "sinpae";
+      const meaning = isSinpae
+        ? CHEONEUM_SINPAE_MEANINGS[placed.card.id]
+        : CHEONEUM_JINPAE_MEANINGS[placed.card.id];
       if (!meaning) {
-        return `- ${placed.card.name} / ${placed.label}: 신패 의미 씨앗 미작성`;
+        return `- ${placed.card.name} / ${placed.label}: ${isSinpae ? "신패" : "진패"} 의미 씨앗 미작성`;
       }
 
       const spreadBias = meaning.spreadBias?.[reading.spread];

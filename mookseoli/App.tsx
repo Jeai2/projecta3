@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Keyboard, Platform, Animated, Easing, Image, ImageBackground, type ImageSourcePropType } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, Pressable, FlatList, KeyboardAvoidingView, Keyboard, Platform, Animated, Easing, Image, ImageBackground, type ImageSourcePropType } from 'react-native';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -487,6 +487,45 @@ function getSelectedBackIndices(count: number, reading: CheoneumReading): number
   return [Math.max(0, Math.min(count - 1, seed % count))];
 }
 
+// 카드 뽑기 연출 타이밍 (오버레이 단계 + 채팅 오케스트레이션 공용)
+const DRAW_TIMING = {
+  overlayIn: 200,
+  beforeShuffle: 160,
+  shuffle: 900,
+  beforeFan: 140,
+  fan: 820,
+  beforeSelect: 260,
+  select: 680,
+  beforeReveal: 260,
+  reveal: 900,
+  hold: 520,
+  overlayOut: 260,
+  skipFade: 180,
+  // send() 안에서 사용하는 말풍선 페이싱
+  preludeToOverlay: 360,
+  overlayToCard: 140,
+  cardToReply: 260,
+} as const;
+
+// reveal 단계에서 선택 카드가 실제로 뒤집히는 연출.
+// rotateY/backfaceVisibility는 안드로이드에서 불안정하므로 scaleX 플립(앞/뒷면 교체)으로 구현한다.
+function CheoneumRevealCard({ reveal, item }: { reveal: Animated.Value; item: CheoneumPlacedCard }) {
+  const backScaleX = reveal.interpolate({ inputRange: [0, 0.45, 0.6, 1], outputRange: [1, 1, 0, 0] });
+  const backOpacity = reveal.interpolate({ inputRange: [0, 0.59, 0.6, 1], outputRange: [1, 1, 0, 0] });
+  const frontScaleX = reveal.interpolate({ inputRange: [0, 0.6, 0.78, 1], outputRange: [0, 0, 1, 1] });
+  const frontOpacity = reveal.interpolate({ inputRange: [0, 0.6, 0.61, 1], outputRange: [0, 0, 1, 1] });
+  return (
+    <View style={styles.cheoneumFlipBox}>
+      <Animated.View style={[styles.cheoneumFlipFace, { opacity: backOpacity, transform: [{ scaleX: backScaleX }] }]}>
+        <Image source={CHEONEUM_CARD_BACK} style={styles.cheoneumFlipBack} />
+      </Animated.View>
+      <Animated.View style={[styles.cheoneumFlipFace, { opacity: frontOpacity, transform: [{ scaleX: frontScaleX }] }]}>
+        <CheoneumCardTile item={item} />
+      </Animated.View>
+    </View>
+  );
+}
+
 function CheoneumDrawOverlay({ reading, onDone }: { reading: CheoneumReading; onDone: () => void }) {
   const backCount = getDrawBackCount(reading);
   const selectedIndices = getSelectedBackIndices(backCount, reading);
@@ -499,67 +538,70 @@ function CheoneumDrawOverlay({ reading, onDone }: { reading: CheoneumReading; on
   const select = useRef(new Animated.Value(0)).current;
   const reveal = useRef(new Animated.Value(0)).current;
   const doneRef = useRef(false);
+  const animRef = useRef<Animated.CompositeAnimation | null>(null);
+
+  const finish = useCallback(() => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    onDone();
+  }, [onDone]);
+
+  const skip = useCallback(() => {
+    if (doneRef.current) return;
+    animRef.current?.stop();
+    Animated.timing(overlayOpacity, {
+      toValue: 0,
+      duration: DRAW_TIMING.skipFade,
+      useNativeDriver: true,
+    }).start(finish);
+  }, [finish, overlayOpacity]);
 
   useEffect(() => {
-    const finish = () => {
-      if (doneRef.current) return;
-      doneRef.current = true;
-      onDone();
-    };
-
-    Animated.sequence([
-      Animated.timing(overlayOpacity, { toValue: 1, duration: 240, useNativeDriver: true }),
-      Animated.delay(260),
-      Animated.timing(shuffle, {
-        toValue: 1,
-        duration: 1280,
-        easing: Easing.inOut(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.delay(260),
-      Animated.timing(fan, {
-        toValue: 1,
-        duration: 1120,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.delay(520),
-      Animated.timing(select, {
-        toValue: 1,
-        duration: 920,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.delay(520),
-      Animated.timing(reveal, {
-        toValue: 1,
-        duration: 680,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }),
-      Animated.delay(840),
-      Animated.timing(overlayOpacity, { toValue: 0, duration: 320, useNativeDriver: true }),
-    ]).start(finish);
+    const seq = Animated.sequence([
+      Animated.timing(overlayOpacity, { toValue: 1, duration: DRAW_TIMING.overlayIn, useNativeDriver: true }),
+      Animated.delay(DRAW_TIMING.beforeShuffle),
+      Animated.timing(shuffle, { toValue: 1, duration: DRAW_TIMING.shuffle, easing: Easing.inOut(Easing.cubic), useNativeDriver: true }),
+      Animated.delay(DRAW_TIMING.beforeFan),
+      Animated.timing(fan, { toValue: 1, duration: DRAW_TIMING.fan, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.delay(DRAW_TIMING.beforeSelect),
+      Animated.timing(select, { toValue: 1, duration: DRAW_TIMING.select, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.delay(DRAW_TIMING.beforeReveal),
+      Animated.timing(reveal, { toValue: 1, duration: DRAW_TIMING.reveal, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.delay(DRAW_TIMING.hold),
+      Animated.timing(overlayOpacity, { toValue: 0, duration: DRAW_TIMING.overlayOut, useNativeDriver: true }),
+    ]);
+    animRef.current = seq;
+    seq.start(({ finished }) => {
+      if (finished) finish();
+    });
 
     return () => {
       finish();
     };
-  }, [fan, onDone, overlayOpacity, reveal, select, shuffle]);
+  }, [fan, finish, overlayOpacity, reveal, select, shuffle]);
 
   const center = (backCount - 1) / 2;
   const deckOpacity = reveal.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 0],
+    inputRange: [0, 0.45, 1],
+    outputRange: [1, 0, 0],
+  });
+  const revealOpacity = reveal.interpolate({
+    inputRange: [0, 0.12, 1],
+    outputRange: [0, 1, 1],
   });
   const revealScale = reveal.interpolate({
     inputRange: [0, 1],
-    outputRange: [0.88, 1],
+    outputRange: [0.92, 1],
+  });
+  const hintOpacity = fan.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 0.55],
   });
 
   return (
-    <Animated.View pointerEvents="none" style={[styles.cheoneumOverlay, { opacity: overlayOpacity }]}>
-      <View style={styles.cheoneumOverlayScrim} />
-      <View style={styles.cheoneumOverlayStage}>
+    <Animated.View style={[styles.cheoneumOverlay, { opacity: overlayOpacity }]}>
+      <Pressable style={styles.cheoneumOverlayScrim} onPress={skip} />
+      <View style={styles.cheoneumOverlayStage} pointerEvents="none">
         <Animated.View style={[styles.cheoneumOverlayFan, { opacity: deckOpacity }]}>
         {Array.from({ length: backCount }).map((_, index) => {
           const offset = index - center;
@@ -658,19 +700,22 @@ function CheoneumDrawOverlay({ reading, onDone }: { reading: CheoneumReading; on
             styles.cheoneumOverlayReveal,
             isYangeuiDraw && styles.cheoneumOverlayRevealPair,
             {
-              opacity: reveal,
+              opacity: revealOpacity,
               transform: [{ scale: revealScale }],
             },
           ]}
         >
           {isYangeuiDraw ? (
             <>
-              {!!yangeuiLeft && <CheoneumCardTile item={yangeuiLeft} compact />}
-              {!!yangeuiRight && <CheoneumCardTile item={yangeuiRight} compact />}
+              {!!yangeuiLeft && <CheoneumRevealCard reveal={reveal} item={yangeuiLeft} />}
+              {!!yangeuiRight && <CheoneumRevealCard reveal={reveal} item={yangeuiRight} />}
             </>
           ) : (
-            !!reading.cards[0] && <CheoneumCardTile item={reading.cards[0]} />
+            !!reading.cards[0] && <CheoneumRevealCard reveal={reveal} item={reading.cards[0]} />
           )}
+        </Animated.View>
+        <Animated.View style={[styles.cheoneumSkipHintWrap, { opacity: hintOpacity }]} pointerEvents="none">
+          <Text style={styles.cheoneumSkipHint}>탭하여 건너뛰기</Text>
         </Animated.View>
       </View>
     </Animated.View>
@@ -940,9 +985,9 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
           text: getCheoneumPrelude(aspect, cheoneum),
           kind: 'normal',
         }]);
-        await wait(520);
+        await wait(DRAW_TIMING.preludeToOverlay);
         await playCheoneumDraw(cheoneum);
-        await wait(180);
+        await wait(DRAW_TIMING.overlayToCard);
         setMessages(prev => [...prev, {
           id: `${Date.now()}_cheoneum`,
           role: 'mook',
@@ -950,7 +995,7 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
           kind: 'cheoneum',
           cheoneum,
         }]);
-        await wait(360);
+        await wait(DRAW_TIMING.cardToReply);
       }
 
       for (let i = 0; i < chunks.length; i += 1) {
@@ -981,6 +1026,7 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
     <View style={styles.container}>
       <StatusBar style="light" />
       <View style={styles.header}>
+        <Image source={aspectCopy.avatarImage} style={styles.headerAvatar} />
         <View style={{ flex: 1 }}>
           <Text style={styles.headerName}>{aspectCopy.name}</Text>
           <Text style={styles.headerSub}>{aspectCopy.subtitle}</Text>
@@ -1009,13 +1055,18 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
               </View>
             ) : null
           }
-          renderItem={({ item }) => {
+          renderItem={({ item, index }) => {
+            const isFirstMook = index === 0 || messages[index - 1]?.role !== 'mook';
             if (item.kind === 'cheoneum' && item.cheoneum) {
               return (
                 <View style={styles.rowMook}>
-                  <View style={styles.avatarSm}>
-                    <Image source={aspectCopy.avatarImage} style={styles.avatarSmImage} />
-                  </View>
+                  {isFirstMook ? (
+                    <View style={styles.avatarSm}>
+                      <Image source={aspectCopy.avatarImage} style={styles.avatarSmImage} />
+                    </View>
+                  ) : (
+                    <View style={styles.avatarSpacer} />
+                  )}
                   <CheoneumSpreadView reading={item.cheoneum} />
                 </View>
               );
@@ -1025,9 +1076,13 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
             return (
               <View style={item.role === 'user' ? styles.rowUser : styles.rowMook}>
                 {item.role === 'mook' && (
-                  <View style={[styles.avatarSm, isDefense && styles.avatarDefense]}>
-                    <Image source={aspectCopy.avatarImage} style={styles.avatarSmImage} />
-                  </View>
+                  isFirstMook ? (
+                    <View style={[styles.avatarSm, isDefense && styles.avatarDefense]}>
+                      <Image source={aspectCopy.avatarImage} style={styles.avatarSmImage} />
+                    </View>
+                  ) : (
+                    <View style={styles.avatarSpacer} />
+                  )
                 )}
                 <View
                   style={[
@@ -1229,9 +1284,9 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   avatarSm: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 11,
     borderWidth: 0.5,
     borderColor: COLORS.goldDim,
     alignItems: 'center',
@@ -1244,6 +1299,17 @@ const styles = StyleSheet.create({
   avatarSmImage: {
     width: '100%',
     height: '100%',
+  },
+  avatarSpacer: {
+    width: 36,
+  },
+  headerAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    borderWidth: 0.6,
+    borderColor: COLORS.goldDim,
+    marginRight: 12,
   },
   bubble: {
     maxWidth: '76%',
@@ -1385,6 +1451,34 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: 'rgba(245, 213, 141, 0.95)',
     backgroundColor: 'rgba(245, 213, 141, 0.08)',
+  },
+  cheoneumFlipBox: {
+    width: 116,
+    height: 168,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cheoneumFlipFace: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cheoneumFlipBack: {
+    width: 96,
+    height: 141,
+    borderRadius: 10,
+    borderWidth: 0.9,
+    borderColor: 'rgba(229, 194, 117, 0.62)',
+  },
+  cheoneumSkipHintWrap: {
+    position: 'absolute',
+    bottom: 14,
+    alignSelf: 'center',
+  },
+  cheoneumSkipHint: {
+    color: 'rgba(245, 235, 215, 0.72)',
+    fontSize: 12,
+    letterSpacing: 1,
   },
   cheoneumCard: {
     width: 112,
