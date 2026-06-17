@@ -38,6 +38,7 @@ import {
 import { buildDefenseReply, buildDefenseReturnReply, decideDefense } from "../services/defense.service";
 import { createCheoneumReading, getCheoneumCardCounts } from "../cheoneum/cheoneum.service";
 import { buildCheoneumClientHint, buildCheoneumInsight, createTodayCheoneumDecision, decideCheoneumIntervention } from "../cheoneum/cheoneum-consultation.service";
+import { decideSubjectClarify } from "../services/subject-clarify.service";
 import type { CheoneumSpreadId } from "../cheoneum/cheoneum.types";
 import { getLukimInterpretation, type LukimInterpretation } from "../data/lukim-interpretations";
 import { matchCategories } from "../data/serious-keywords";
@@ -616,6 +617,23 @@ export const getMookAFortuneAPI = async (
       : rawCheoneumDecision;
     let cheoneumReading: ReturnType<typeof createCheoneumReading> | undefined;
     let cheoneumInsight: string | undefined;
+
+    // 주체 확인 되물음(A): 카드 뽑기 직전, 점사 주체가 모호하면 먼저 한 줄 되묻고 이번 턴은 뽑지 않는다.
+    if (cheoneumDecision.shouldUse && !continuationContext) {
+      const subjectClarify = decideSubjectClarify(sessionUserId, combinedMessage, turnCount, aspect);
+      if (subjectClarify) {
+        appendConversationMessage(sessionUserId, "assistant", subjectClarify.reply);
+        await saveAuthorizedSession(sessionUserId, res);
+        console.log(`[주체 확인] ${aspect} | turn=${turnCount} | 대상=${subjectClarify.targetLabel} | "${combinedMessage.slice(0, 24)}"`);
+        return res.status(200).json({
+          error: false,
+          conversationId: sessionUserId,
+          reply: subjectClarify.reply,
+          turnCount,
+          subjectClarify: true,
+        });
+      }
+    }
 
     if (cheoneumDecision.shouldUse && cheoneumDecision.spread) {
       cheoneumReading = createCheoneumReading({ aspect, spread: cheoneumDecision.spread });
