@@ -9,6 +9,9 @@ import {
   getSessionAPI,
   linkAccountProfileCandidateAPI,
   getCheoneumDrawAPI,
+  getWalletAPI,
+  grantCreditsAPI,
+  setSubscriptionAPI,
 } from "../controllers/fortune.controller";
 
 
@@ -19,6 +22,10 @@ router.post("/chat", getMookAFortuneAPI);
 router.post("/lukim", getLukimAPI);
 router.post("/cheoneum/draw", getCheoneumDrawAPI);
 router.get("/greeting", getGreetingAPI);
+
+router.get("/wallet", getWalletAPI);
+router.post("/wallet/grant", grantCreditsAPI);
+router.post("/wallet/subscribe", setSubscriptionAPI);
 
 router.get("/session", getSessionAPI);
 router.post("/session/account-profile-candidate", linkAccountProfileCandidateAPI);

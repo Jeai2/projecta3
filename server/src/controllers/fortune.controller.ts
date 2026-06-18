@@ -39,6 +39,7 @@ import { buildDefenseReply, buildDefenseReturnReply, decideDefense } from "../se
 import { createCheoneumReading, getCheoneumCardCounts } from "../cheoneum/cheoneum.service";
 import { buildCheoneumClientHint, buildCheoneumInsight, createTodayCheoneumDecision, decideCheoneumIntervention } from "../cheoneum/cheoneum-consultation.service";
 import { decideSubjectClarify } from "../services/subject-clarify.service";
+import { buildPaywallReply, consumeSpreadAccess, decideSpreadAccess, getWallet, grantCredits, setSubscribed } from "../services/cheoneum-wallet.service";
 import type { CheoneumSpreadId } from "../cheoneum/cheoneum.types";
 import { getLukimInterpretation, type LukimInterpretation } from "../data/lukim-interpretations";
 import { matchCategories } from "../data/serious-keywords";
@@ -636,8 +637,25 @@ export const getMookAFortuneAPI = async (
     }
 
     if (cheoneumDecision.shouldUse && cheoneumDecision.spread) {
+      // 결제 게이팅: 깊은 스프레드는 크레딧/구독/첫무료가 있어야 펼친다.
+      const access = decideSpreadAccess(cheoneumDecision.spread, sessionUserId);
+      if (!access.allowed) {
+        const reply = buildPaywallReply(aspect, access);
+        appendConversationMessage(sessionUserId, "assistant", reply);
+        await saveAuthorizedSession(sessionUserId, res);
+        console.log(`[페이월] ${access.spreadName} | cost=${access.cost} | credits=${access.credits}`);
+        return res.status(200).json({
+          error: false,
+          conversationId: sessionUserId,
+          reply,
+          turnCount,
+          paywall: { spread: cheoneumDecision.spread, spreadName: access.spreadName, cost: access.cost },
+          wallet: { credits: access.credits, subscribed: access.subscribed },
+        });
+      }
       cheoneumReading = createCheoneumReading({ aspect, spread: cheoneumDecision.spread });
       cheoneumInsight = buildCheoneumInsight(cheoneumReading, cheoneumDecision, combinedMessage);
+      consumeSpreadAccess(sessionUserId, access);
     } else if (continuationContext && cheoneumSession.lastSpread) {
       cheoneumInsight = buildContinuationInsight(continuationContext, cheoneumSession.lastSpread);
     }
@@ -721,7 +739,8 @@ export const getMookAFortuneAPI = async (
     }
 
     appendConversationMessage(sessionUserId, "assistant", reply);
-    await saveAuthorizedSession(sessionUserId, res);
+    // 세션 저장은 응답을 막지 않도록 백그라운드로 (DB 왕복을 응답 경로에서 제거)
+    void saveAuthorizedSession(sessionUserId, res).catch(() => {});
     return res.status(200).json({
       error: false,
       conversationId: sessionUserId,
@@ -735,6 +754,10 @@ export const getMookAFortuneAPI = async (
             hint: buildCheoneumClientHint(cheoneumDecision, combinedMessage),
           }
         : undefined,
+      wallet: (() => {
+        const w = getWallet(sessionUserId);
+        return { credits: w.credits, subscribed: w.subscribed };
+      })(),
     });
   } catch (error) {
     const errMsg = error instanceof Error ? error.message : String(error);
@@ -867,6 +890,49 @@ export const linkAccountProfileCandidateAPI = async (
   }
 };
 
+// 서울 날씨 캐시 (stale-while-revalidate) — wttr.in이 느려 인사가 막히는 걸 막는다.
+// 신선하면 즉시 반환, 오래됐으면 옛 값 즉시 반환 + 백그라운드 갱신, 캐시 없으면 한 번만 짧게(1.5s) 대기.
+let seoulWeatherCache: { value: string | undefined; at: number } | null = null;
+let seoulWeatherRefreshing = false;
+const WEATHER_TTL_MS = 20 * 60 * 1000;
+
+async function fetchSeoulWeather(): Promise<string | undefined> {
+  try {
+    const res = await fetch("https://wttr.in/Seoul?format=j1", { signal: AbortSignal.timeout(1500) });
+    const data = (await res.json()) as any;
+    const current = data.current_condition[0];
+    const desc =
+      (current.lang_ko?.[0]?.value as string | undefined) ?? (current.weatherDesc[0].value as string);
+    return `기온 ${current.temp_C}°C, ${desc}`;
+  } catch {
+    return undefined;
+  }
+}
+
+async function getSeoulWeather(): Promise<string | undefined> {
+  const now = Date.now();
+  if (seoulWeatherCache && now - seoulWeatherCache.at < WEATHER_TTL_MS) {
+    return seoulWeatherCache.value; // 신선 → 대기 0
+  }
+  if (seoulWeatherCache) {
+    // 오래됨 → 옛 값 즉시 반환 + 백그라운드 갱신 (대기 0)
+    if (!seoulWeatherRefreshing) {
+      seoulWeatherRefreshing = true;
+      fetchSeoulWeather()
+        .then((v) => { seoulWeatherCache = { value: v, at: Date.now() }; })
+        .finally(() => { seoulWeatherRefreshing = false; });
+    }
+    return seoulWeatherCache.value;
+  }
+  // 캐시 없음(첫 호출) → 한 번만 짧게 기다림(1.5s)
+  const value = await fetchSeoulWeather();
+  seoulWeatherCache = { value, at: Date.now() };
+  return value;
+}
+
+// 서버 기동 시 미리 한 번 데워둔다(첫 사용자도 대기 없게).
+void getSeoulWeather();
+
 // ══════════════════════════════════════════════════════════════════════════════
 // GET /api/greeting — 앱 첫 접속 인사말 생성
 // ══════════════════════════════════════════════════════════════════════════════
@@ -891,22 +957,8 @@ export const getGreetingAPI = async (req: Request<ParamsDictionary, any, any, { 
       month >= 6 && month <= 8 ? '여름' :
       month >= 9 && month <= 11 ? '가을' : '겨울';
 
-    // 서울 날씨 — wttr.in (무료, API 키 불필요)
-    let weather: string | undefined;
-    try {
-      const weatherRes = await fetch('https://wttr.in/Seoul?format=j1', {
-        signal: AbortSignal.timeout(4000),
-      });
-      const weatherData = await weatherRes.json() as any;
-      const current = weatherData.current_condition[0];
-      const tempC = current.temp_C;
-      const desc =
-        (current.lang_ko?.[0]?.value as string | undefined) ??
-        (current.weatherDesc[0].value as string);
-      weather = `기온 ${tempC}°C, ${desc}`;
-    } catch {
-      // 날씨 fetch 실패 시 맥락 없이 진행
-    }
+    // 서울 날씨 — 캐시 사용(대기 거의 0). 실패하면 날씨 없이 진행.
+    const weather = await getSeoulWeather();
 
     const { getMookAGreeting } = await import('../services/mookA.service');
     const greeting = await getMookAGreeting({ timeOfDay, weekday, month, season, weather }, aspect);
@@ -919,4 +971,37 @@ export const getGreetingAPI = async (req: Request<ParamsDictionary, any, any, { 
     console.error('[인사] 오류:', error);
     return res.status(200).json({ error: false, greeting: '오셨어요?' });
   }
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 천음 지갑 (크레딧 + 구독) — v0 개발용 스텁 결제. 실결제는 EAS 빌드 때 IAP로 교체.
+// ══════════════════════════════════════════════════════════════════════════════
+export const getWalletAPI = async (
+  req: Request<ParamsDictionary, any, any, { conversationId?: string; userId?: string }>,
+  res: Response,
+) => {
+  const id = resolveConversationId(req.query.conversationId, req.query.userId);
+  const w = getWallet(id);
+  return res.status(200).json({ error: false, conversationId: id, wallet: { credits: w.credits, subscribed: w.subscribed } });
+};
+
+export const grantCreditsAPI = async (
+  req: Request<ParamsDictionary, any, { conversationId?: string; userId?: string; amount?: number }>,
+  res: Response,
+) => {
+  const id = resolveConversationId(req.body.conversationId, req.body.userId);
+  const amount = typeof req.body.amount === "number" && req.body.amount > 0 ? Math.floor(req.body.amount) : 10;
+  const w = grantCredits(id, amount);
+  console.log(`[지갑] 충전(스텁) +${amount} → ${w.credits} | ${id}`);
+  return res.status(200).json({ error: false, conversationId: id, wallet: { credits: w.credits, subscribed: w.subscribed } });
+};
+
+export const setSubscriptionAPI = async (
+  req: Request<ParamsDictionary, any, { conversationId?: string; userId?: string; on?: boolean }>,
+  res: Response,
+) => {
+  const id = resolveConversationId(req.body.conversationId, req.body.userId);
+  const w = setSubscribed(id, req.body.on !== false);
+  console.log(`[지갑] 구독(스텁) → ${w.subscribed} | ${id}`);
+  return res.status(200).json({ error: false, conversationId: id, wallet: { credits: w.credits, subscribed: w.subscribed } });
 };

@@ -66,11 +66,12 @@ export async function hydratePersistentSession(
 ): Promise<PersistentSessionLoadStatus> {
   const db = getDatabaseClient();
   if (!db) return "disabled";
+  // 게스트(미로그인)는 영속화 대상이 아니므로 DB 조회 자체를 건너뛴다 → 매 요청의 DB 왕복 지연 제거.
+  // (로그인 도입 시: 토큰 기반 접근 제어로 forbidden 가드를 복원할 것)
+  if (!authenticatedUserId) return "disabled";
 
   try {
     const stored = await db.consultationSession.findUnique({ where: { id: conversationId } });
-    if (stored && !authenticatedUserId) return "forbidden";
-    if (!authenticatedUserId) return "disabled";
     if (stored && stored.userId !== authenticatedUserId) return "forbidden";
 
     if (stored) {

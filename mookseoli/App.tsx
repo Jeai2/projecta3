@@ -5,7 +5,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // 로컬 테스트: PC IP 주소. 배포 후 Railway URL로 교체
-const API_URL = 'http://192.168.219.102:3001';
+const API_URL = 'http://10.77.247.214:3001';
 
 const COLORS = {
   bg: '#0E0C0A',
@@ -72,10 +72,11 @@ type Message = {
   id: string;
   role: 'mook' | 'user';
   text: string;
-  kind?: 'normal' | 'defense' | 'cheoneum';
+  kind?: 'normal' | 'defense' | 'cheoneum' | 'paywall';
   defenseType?: DefenseType;
   defenseLocked?: boolean;
   cheoneum?: CheoneumReading;
+  paywall?: { spread: string; spreadName: string; cost: number };
 };
 
 type DefenseType = 'vague' | 'laugh' | 'test' | 'attack' | 'unsafe' | 'return_intent';
@@ -135,6 +136,8 @@ type ChatResponse = {
   defenseType?: DefenseType;
   defenseLocked?: boolean;
   cheoneum?: CheoneumReading;
+  wallet?: { credits: number; subscribed: boolean };
+  paywall?: { spread: string; spreadName: string; cost: number };
 };
 
 const CHEONEUM_CARD_IMAGES: Record<string, ImageSourcePropType> = {
@@ -861,6 +864,15 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
   const [conversationId] = useState(createConversationId);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoadingGreeting, setIsLoadingGreeting] = useState(true);
+  const [wallet, setWallet] = useState<{ credits: number; subscribed: boolean }>({ credits: 0, subscribed: false });
+  const lastSentRef = useRef<string>('');
+
+  useEffect(() => {
+    fetch(`${API_URL}/api/wallet?conversationId=${encodeURIComponent(conversationId)}`)
+      .then(r => r.json())
+      .then(d => { if (d?.wallet) setWallet(d.wallet); })
+      .catch(() => {});
+  }, [conversationId]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [defenseLocked, setDefenseLocked] = useState(false);
@@ -953,13 +965,30 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
     };
   }, []);
 
-  const send = async (text: string) => {
-    if (!text.trim() || isTyping) return;
-    const userMsg: Message = { id: Date.now().toString(), role: 'user', text };
-    setMessages(prev => [...prev, userMsg]);
-    setInput('');
-    setIsTyping(true);
+  const applyWallet = (w?: { credits: number; subscribed: boolean }) => { if (w) setWallet(w); };
 
+  const topUp = async (amount: number) => {
+    try {
+      const res = await fetch(`${API_URL}/api/wallet/grant`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId, amount }),
+      });
+      applyWallet((await res.json())?.wallet);
+    } catch { /* 무시 */ }
+  };
+
+  const subscribe = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/wallet/subscribe`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId, on: true }),
+      });
+      applyWallet((await res.json())?.wallet);
+    } catch { /* 무시 */ }
+  };
+
+  const runChat = async (text: string) => {
+    setIsTyping(true);
     try {
       const res = await fetch(`${API_URL}/api/chat`, {
         method: 'POST',
@@ -967,6 +996,20 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
         body: JSON.stringify({ conversationId, message: text, aspect }),
       });
       const data = await res.json() as ChatResponse;
+      applyWallet(data.wallet);
+
+      // 결제 필요(페이월): 카드 펼치지 않고 충전/구독 안내 카드만 띄운다.
+      if (data.paywall) {
+        setMessages(prev => [...prev, {
+          id: `${Date.now()}_paywall`,
+          role: 'mook',
+          text: data.reply ?? '이건 깊은 펼침이에요.',
+          kind: 'paywall',
+          paywall: data.paywall,
+        }]);
+        return;
+      }
+
       const reply = data.reply ?? '잠깐 자리를 비웠어요. 다시 말해봐요.';
       const isDefense = !!data.defense;
       const chunks = isDefense ? splitDefenseIntoBubbles(reply) : splitReplyIntoBubbles(reply);
@@ -1022,6 +1065,19 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
     }
   };
 
+  const send = async (text: string) => {
+    if (!text.trim() || isTyping) return;
+    const userMsg: Message = { id: Date.now().toString(), role: 'user', text };
+    setMessages(prev => [...prev, userMsg]);
+    setInput('');
+    lastSentRef.current = text;
+    await runChat(text);
+  };
+
+  const retryReading = async () => {
+    if (lastSentRef.current && !isTyping) await runChat(lastSentRef.current);
+  };
+
   return (
     <View style={styles.container}>
       <StatusBar style="light" />
@@ -1031,6 +1087,9 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
           <Text style={styles.headerName}>{aspectCopy.name}</Text>
           <Text style={styles.headerSub}>{aspectCopy.subtitle}</Text>
         </View>
+        <TouchableOpacity style={styles.creditChip} onPress={() => topUp(10)} activeOpacity={0.7}>
+          <Text style={styles.creditChipText}>{wallet.subscribed ? '⭐ 구독중' : `🔮 ${wallet.credits}`}</Text>
+        </TouchableOpacity>
         <View style={styles.onlineDot} />
       </View>
 
@@ -1057,6 +1116,25 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
           }
           renderItem={({ item, index }) => {
             const isFirstMook = index === 0 || messages[index - 1]?.role !== 'mook';
+            if (item.kind === 'paywall' && item.paywall) {
+              return (
+                <View style={styles.rowMook}>
+                  {isFirstMook ? (
+                    <View style={styles.avatarSm}><Image source={aspectCopy.avatarImage} style={styles.avatarSmImage} /></View>
+                  ) : (<View style={styles.avatarSpacer} />)}
+                  <View style={styles.paywallCard}>
+                    <Text style={styles.paywallText}>{item.text}</Text>
+                    <TouchableOpacity style={styles.paywallBtnPrimary} activeOpacity={0.85} onPress={async () => { await topUp(item.paywall!.cost); await retryReading(); }}>
+                      <Text style={styles.paywallBtnPrimaryText}>{item.paywall.cost}크레딧 충전하고 펼치기</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.paywallBtnSub} activeOpacity={0.85} onPress={async () => { await subscribe(); await retryReading(); }}>
+                      <Text style={styles.paywallBtnSubText}>구독하고 무제한 펼치기</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.paywallBalance}>보유 {wallet.credits}크레딧{wallet.subscribed ? ' · 구독중' : ''}</Text>
+                  </View>
+                </View>
+              );
+            }
             if (item.kind === 'cheoneum' && item.cheoneum) {
               return (
                 <View style={styles.rowMook}>
@@ -1311,6 +1389,41 @@ const styles = StyleSheet.create({
     borderColor: COLORS.goldDim,
     marginRight: 12,
   },
+  creditChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 12,
+    borderWidth: 0.6,
+    borderColor: COLORS.goldDim,
+    marginRight: 10,
+  },
+  creditChipText: { color: COLORS.gold, fontSize: 12, fontWeight: '500' },
+  paywallCard: {
+    flex: 1,
+    backgroundColor: 'rgba(40, 30, 18, 0.6)',
+    borderWidth: 0.7,
+    borderColor: 'rgba(201, 169, 110, 0.5)',
+    borderRadius: 14,
+    padding: 13,
+    gap: 9,
+  },
+  paywallText: { color: COLORS.text, fontSize: 14, lineHeight: 20 },
+  paywallBtnPrimary: {
+    backgroundColor: COLORS.gold,
+    borderRadius: 10,
+    paddingVertical: 11,
+    alignItems: 'center',
+  },
+  paywallBtnPrimaryText: { color: '#1a1206', fontSize: 14, fontWeight: '600' },
+  paywallBtnSub: {
+    borderWidth: 0.8,
+    borderColor: COLORS.goldDim,
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  paywallBtnSubText: { color: COLORS.gold, fontSize: 13, fontWeight: '500' },
+  paywallBalance: { color: COLORS.goldDim, fontSize: 11, textAlign: 'right' },
   bubble: {
     maxWidth: '76%',
     borderRadius: 16,
