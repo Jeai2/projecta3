@@ -11,6 +11,15 @@ import { getDatabaseClient } from "./database.service";
 
 export type PersistentSessionLoadStatus = "disabled" | "new" | "loaded" | "forbidden";
 
+// graceful degradation: 영속화(세션 저장/복원)는 점사 자체에 필수가 아니다.
+// DB가 잠시 불통이어도 throw로 채팅을 죽이지 않고, 인메모리로 계속 진행한다.
+function describeDbError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message.split("\n").slice(0, 2).join(" ").slice(0, 200);
+  }
+  return String(error);
+}
+
 function toJson(value: unknown): Prisma.InputJsonValue {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
 }
@@ -58,25 +67,31 @@ export async function hydratePersistentSession(
   const db = getDatabaseClient();
   if (!db) return "disabled";
 
-  const stored = await db.consultationSession.findUnique({ where: { id: conversationId } });
-  if (stored && !authenticatedUserId) return "forbidden";
-  if (!authenticatedUserId) return "disabled";
-  if (stored && stored.userId !== authenticatedUserId) return "forbidden";
+  try {
+    const stored = await db.consultationSession.findUnique({ where: { id: conversationId } });
+    if (stored && !authenticatedUserId) return "forbidden";
+    if (!authenticatedUserId) return "disabled";
+    if (stored && stored.userId !== authenticatedUserId) return "forbidden";
 
-  if (stored) {
-    if (!hasInMemorySession(conversationId)) {
-      restoreSessionSnapshot(conversationId, stored.snapshot as unknown as PersistedSessionSnapshot);
+    if (stored) {
+      if (!hasInMemorySession(conversationId)) {
+        restoreSessionSnapshot(conversationId, stored.snapshot as unknown as PersistedSessionSnapshot);
+      }
+      return "loaded";
     }
-    return "loaded";
-  }
 
-  if (!hasInMemorySession(conversationId)) {
-    const candidate = await db.accountProfileCandidate.findUnique({
-      where: { userId: authenticatedUserId },
-    });
-    if (candidate) setAccountProfileCandidate(conversationId, toCandidate(candidate));
+    if (!hasInMemorySession(conversationId)) {
+      const candidate = await db.accountProfileCandidate.findUnique({
+        where: { userId: authenticatedUserId },
+      });
+      if (candidate) setAccountProfileCandidate(conversationId, toCandidate(candidate));
+    }
+    return "new";
+  } catch (error) {
+    // DB 불통 → 권한 검증/복원을 못 하더라도 채팅은 인메모리로 계속한다(저장만 포기).
+    console.warn(`[영속화] 세션 복원 실패 — 인메모리로 계속 진행: ${describeDbError(error)}`);
+    return "disabled";
   }
-  return "new";
 }
 
 export async function persistSessionForUser(
@@ -87,25 +102,32 @@ export async function persistSessionForUser(
   const snapshot = exportSessionSnapshot(conversationId);
   if (!db || !authenticatedUserId || !snapshot) return;
 
-  await ensureUser(authenticatedUserId);
-  const stored = await db.consultationSession.findUnique({ where: { id: conversationId } });
-  if (stored && stored.userId !== authenticatedUserId) {
-    throw new Error("다른 사용자에게 속한 상담 세션입니다.");
-  }
+  try {
+    await ensureUser(authenticatedUserId);
+    const stored = await db.consultationSession.findUnique({ where: { id: conversationId } });
+    if (stored && stored.userId !== authenticatedUserId) {
+      // 다른 사용자 세션이면 덮어쓰지 않고 조용히 건너뛴다(안전 측면에서도 skip이 맞다).
+      console.warn(`[영속화] 세션 저장 건너뜀 — 소유자 불일치 conversationId=${conversationId}`);
+      return;
+    }
 
-  await db.consultationSession.upsert({
-    where: { id: conversationId },
-    update: {
-      snapshot: toJson(snapshot),
-      lastActivityAt: new Date(snapshot.lastActivityAt),
-    },
-    create: {
-      id: conversationId,
-      userId: authenticatedUserId,
-      snapshot: toJson(snapshot),
-      lastActivityAt: new Date(snapshot.lastActivityAt),
-    },
-  });
+    await db.consultationSession.upsert({
+      where: { id: conversationId },
+      update: {
+        snapshot: toJson(snapshot),
+        lastActivityAt: new Date(snapshot.lastActivityAt),
+      },
+      create: {
+        id: conversationId,
+        userId: authenticatedUserId,
+        snapshot: toJson(snapshot),
+        lastActivityAt: new Date(snapshot.lastActivityAt),
+      },
+    });
+  } catch (error) {
+    // DB 불통 → 이번 턴 저장만 건너뛴다. 답변/대화는 그대로 유지.
+    console.warn(`[영속화] 세션 저장 실패 — 이번 턴 저장 건너뜀: ${describeDbError(error)}`);
+  }
 }
 
 export async function persistAccountCandidateForUser(
@@ -118,25 +140,30 @@ export async function persistAccountCandidateForUser(
     throw new Error("소셜 로그인 공급자가 없는 후보 정보는 저장할 수 없습니다.");
   }
 
-  await ensureUser(authenticatedUserId);
-  await db.accountProfileCandidate.upsert({
-    where: { userId: authenticatedUserId },
-    update: {
-      provider: candidate.socialLoginProvider,
-      displayName: candidate.displayName,
-      birthDate: candidate.birth?.date,
-      calendarType: candidate.birth?.calendarType,
-      isLeapMonth: candidate.birth?.isLeapMonth,
-      genderForCalculation: candidate.genderForCalculation,
-    },
-    create: {
-      userId: authenticatedUserId,
-      provider: candidate.socialLoginProvider,
-      displayName: candidate.displayName,
-      birthDate: candidate.birth?.date,
-      calendarType: candidate.birth?.calendarType,
-      isLeapMonth: candidate.birth?.isLeapMonth,
-      genderForCalculation: candidate.genderForCalculation,
-    },
-  });
+  try {
+    await ensureUser(authenticatedUserId);
+    await db.accountProfileCandidate.upsert({
+      where: { userId: authenticatedUserId },
+      update: {
+        provider: candidate.socialLoginProvider,
+        displayName: candidate.displayName,
+        birthDate: candidate.birth?.date,
+        calendarType: candidate.birth?.calendarType,
+        isLeapMonth: candidate.birth?.isLeapMonth,
+        genderForCalculation: candidate.genderForCalculation,
+      },
+      create: {
+        userId: authenticatedUserId,
+        provider: candidate.socialLoginProvider,
+        displayName: candidate.displayName,
+        birthDate: candidate.birth?.date,
+        calendarType: candidate.birth?.calendarType,
+        isLeapMonth: candidate.birth?.isLeapMonth,
+        genderForCalculation: candidate.genderForCalculation,
+      },
+    });
+  } catch (error) {
+    // DB 불통 → 로그인 후보 저장만 건너뛴다(다음 저장 시 다시 시도됨).
+    console.warn(`[영속화] 계정 후보 저장 실패 — 건너뜀: ${describeDbError(error)}`);
+  }
 }
