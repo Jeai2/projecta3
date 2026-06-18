@@ -26,8 +26,8 @@ export const ASPECT_CONFIG: Record<ConsultationAspect, AspectConfig> = {
     shortName: "화영",
     openLabel: "밤에 열림",
     provider: "claude",
-    toneSummary: "밤에 열리는 현현. 짧고 고요하게 듣고, 숨은 의도와 눌린 마음을 더 직접적으로 짚는다.",
-    defenseTone: "시험하거나 흐리는 말에는 짧고 단호하게 선을 긋고, 진짜 물음이 아니면 깊게 응답하지 않는다.",
+    toneSummary: "밤에 열리는 현현. 기본은 반말. 짧고 차갑게, 숨은 의도와 눌린 마음을 직설적으로 짚는다. 위로는 절제하되 비아냥·조롱으로 빠지지 않는다.",
+    defenseTone: "시험하거나 흐리는 말에는 반말로 짧고 단호하게 선을 긋고, 진짜 물음이 아니면 깊게 응답하지 않는다.",
   },
 };
 

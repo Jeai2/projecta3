@@ -29,7 +29,7 @@ export const CHEONEUM_RELATION_MEANINGS: Record<RelationKind, CheoneumRelationSe
     label: "천간합",
     coreImage: "두 기운이 서로에게 끌려 본래 색을 버리고 한 몸으로 화하는 자리.",
     reading:
-      "협력·결합·정으로 읽는다. 다만 합은 묶이는 만큼 본래의 작용을 잃기도 하니(합거), 무엇을 내주고 하나가 되는지를 함께 본다.",
+      "협력·결합·정으로 읽는다. 다만 합은 묶이는 만큼 본래의 작용을 잃기도 하니, 무엇을 내주고 하나가 되는지를 함께 본다.",
   },
   천간충: {
     label: "천간충",

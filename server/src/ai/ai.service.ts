@@ -199,6 +199,19 @@ export const getAiGeneratedResponse = async (
  * 시스템 프롬프트를 그대로 전달하고, 텍스트만 반환한다.
  * 기존 getAiGeneratedResponse와 달리 풍경 묘사 래핑 없음.
  */
+// 페르소나는 마크다운 금지지만 LLM이 가끔 **강조**/__/#/`code`를 흘린다.
+// 카카오톡식 순수 텍스트로 내보내기 위해 출력 단계에서 제거한다(화선·화영·인사 공통).
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "$1")            // **굵게**
+    .replace(/__(.+?)__/g, "$1")                // __굵게__
+    .replace(/\*(?=\S)(.+?)(?<=\S)\*/g, "$1")   // *기울임* (공백 둘러싼 곱셈표시는 건드리지 않음)
+    .replace(/`([^`]+)`/g, "$1")                // `코드`
+    .replace(/^\s{0,3}#{1,6}\s+/gm, "")          // # 제목
+    .replace(/\*\*/g, "")                         // 남은 ** 잔여
+    .replace(/__/g, "");                          // 남은 __ 잔여
+}
+
 export const getMookAChatResponse = async (
   systemPrompt: string,
   userMessage: string,
@@ -207,19 +220,18 @@ export const getMookAChatResponse = async (
   const provider = options.provider ?? "gemini";
 
   try {
+    let raw: string | null;
     if (provider === "gemini") {
-      return await getGeminiChatResponse(systemPrompt, userMessage);
+      raw = await getGeminiChatResponse(systemPrompt, userMessage);
+    } else if (provider === "claude") {
+      raw = await getClaudeChatResponse(systemPrompt, userMessage);
+    } else if (provider === "openai") {
+      raw = await getOpenAIChatResponse(systemPrompt, userMessage);
+    } else {
+      throw new Error(`지원하지 않는 AI provider입니다: ${provider}`);
     }
 
-    if (provider === "claude") {
-      return await getClaudeChatResponse(systemPrompt, userMessage);
-    }
-
-    if (provider === "openai") {
-      return await getOpenAIChatResponse(systemPrompt, userMessage);
-    }
-
-    throw new Error(`지원하지 않는 AI provider입니다: ${provider}`);
+    return raw == null ? null : stripMarkdown(raw);
   } catch (error) {
     console.error("[MookA] AI 응답 생성 실패:", error);
     return null;

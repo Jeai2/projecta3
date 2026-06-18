@@ -234,7 +234,14 @@
       "Bash(grep -n \"bundleIdentifier\\\\|android.*package\\\\|\\\\\"package\\\\\"\" mookseoli/app.json)",
       "Bash(grep -n \"PORT\\\\|3001\\\\|cors\\(\\\\|/health\" server/src/index.ts)",
       "Bash(npm.cmd run *)",
-      "Bash(echo \"BUILD_EXIT:$?\")"
+      "Bash(echo \"BUILD_EXIT:$?\")",
+      "Bash(find server/src -type d -name \"aspects\" -o -type d -name \"hwayeong\")",
+      "Bash(ls server/src/aspects)",
+      "Bash(find server/src -ipath \"*hwayeong*\" -type f)",
+      "Bash(npx.cmd tsc *)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(python _tmp_findings_gen.py)",
+      "PowerShell($out = python --version 2>&1; Write-Output \"exit=$LASTEXITCODE out=$out\"; $py = \\(Get-Command python -ErrorAction SilentlyContinue\\).Source; Write-Output \"pypath=$py\")"
     ]
   }
 }

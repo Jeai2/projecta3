@@ -418,7 +418,45 @@ function getCardByPosition(reading: CheoneumReading, position: string): Cheoneum
   return reading.cards.find(item => item.position === position);
 }
 
+// 스프레드별 자리 격자(행×열). null은 빈칸(스페이서)이라 카드가 자리대로 정렬된다.
+// 뽑기 연출(CheoneumRevealBoard)과 정적 패널(CheoneumSpreadCards)이 같은 격자를 공유한다.
+function getCheoneumLayoutGrid(reading: CheoneumReading): { cols: number; rows: (string | null)[][] } {
+  const posStartsWith = (prefix: string): string | null =>
+    reading.cards.find(c => c.position.startsWith(prefix))?.position ?? null;
+
+  switch (reading.spread) {
+    case 'ilgi':
+      return { cols: 1, rows: [['one-energy']] };
+    case 'yangeui':
+      return { cols: 2, rows: [['left-yin', 'right-yang']] };
+    case 'tonggwan':
+      // 통관패(열쇠)가 위, 두 주체가 아래 양옆
+      return { cols: 3, rows: [[null, 'tonggwan-key', null], ['subject-a', null, 'subject-b']] };
+    case 'cheonjiin':
+      // 천·인·지 세로 적층 (위/중간/아래 — 음양에 따라 천지 의미가 뒤집히지만 자리는 동일)
+      return { cols: 1, rows: [[posStartsWith('top')], [posStartsWith('middle')], [posStartsWith('bottom')]] };
+    case 'wonhyeongijeong': {
+      const hidden = reading.cards.find(c => c.orientation === 'hidden')?.position ?? null;
+      // 元亨利貞 가로 4 + 그 아래 숨은 신패
+      return { cols: 4, rows: [['won', 'hyeong', 'i', 'jeong'], [null, hidden, null, null]] };
+    }
+    case 'sunhwan':
+      // 중앙 + 사방 십자
+      return { cols: 3, rows: [[null, 'north', null], ['west', 'center', 'east'], [null, 'south', null]] };
+    case 'nakseo-gugung': {
+      const grid: (string | null)[][] = [[null, null, null], [null, null, null], [null, null, null]];
+      reading.cards.forEach(c => {
+        if (typeof c.row === 'number' && typeof c.col === 'number') grid[c.row][c.col] = c.position;
+      });
+      return { cols: 3, rows: grid };
+    }
+    default:
+      return { cols: Math.max(1, reading.cards.length), rows: [reading.cards.map(c => c.position)] };
+  }
+}
+
 function CheoneumSpreadCards({ reading }: { reading: CheoneumReading }) {
+  // 일기는 단일 카드를 큼직하게(컴팩트 아님) 중앙에.
   if (reading.spread === 'ilgi') {
     const card = reading.cards[0];
     return (
@@ -428,38 +466,20 @@ function CheoneumSpreadCards({ reading }: { reading: CheoneumReading }) {
     );
   }
 
-  if (reading.spread === 'yangeui') {
-    const left = getCardByPosition(reading, 'left-yin') ?? reading.cards[0];
-    const right = getCardByPosition(reading, 'right-yang') ?? reading.cards[1];
-    return (
-      <View style={styles.cheoneumTwoLayout}>
-        {!!left && <CheoneumCardTile item={left} compact />}
-        {!!right && <CheoneumCardTile item={right} compact />}
-      </View>
-    );
-  }
-
-  if (reading.spread === 'tonggwan') {
-    const subjectA = getCardByPosition(reading, 'subject-a') ?? reading.cards[0];
-    const subjectB = getCardByPosition(reading, 'subject-b') ?? reading.cards[1];
-    const key = getCardByPosition(reading, 'tonggwan-key') ?? reading.cards[2];
-    return (
-      <View style={styles.cheoneumTonggwanLayout}>
-        <View style={styles.cheoneumKeyWrap}>
-          {!!key && <CheoneumCardTile item={key} compact />}
-        </View>
-        <View style={styles.cheoneumTwoLayout}>
-          {!!subjectA && <CheoneumCardTile item={subjectA} compact />}
-          {!!subjectB && <CheoneumCardTile item={subjectB} compact />}
-        </View>
-      </View>
-    );
-  }
-
+  const { rows } = getCheoneumLayoutGrid(reading);
   return (
-    <View style={styles.cheoneumGridLayout}>
-      {reading.cards.map(item => (
-        <CheoneumCardTile key={`${item.position}-${item.drawIndex}`} item={item} compact />
+    <View style={styles.cheoneumBoard}>
+      {rows.map((row, ri) => (
+        <View key={ri} style={styles.cheoneumBoardRow}>
+          {row.map((pos, ci) => {
+            const item = pos ? getCardByPosition(reading, pos) : undefined;
+            return (
+              <View key={ci} style={styles.cheoneumBoardCell}>
+                {!!item && <CheoneumCardTile item={item} compact />}
+              </View>
+            );
+          })}
+        </View>
       ))}
     </View>
   );
@@ -486,6 +506,20 @@ function getSelectedBackIndices(count: number, reading: CheoneumReading): number
     }
 
     return [leftIndex, rightIndex];
+  }
+
+  // 3장 이상: 카드 수만큼 부채에서 고르게 뽑는다(중앙 쪽으로 모음).
+  if (reading.cards.length >= 3) {
+    const n = Math.min(count, reading.cards.length);
+    const span = count - 1;
+    const set = new Set<number>();
+    for (let i = 0; i < n && set.size < count; i++) {
+      const t = n === 1 ? 0.5 : i / (n - 1);
+      let idx = Math.max(0, Math.min(count - 1, Math.round(2 + t * (span - 4))));
+      while (set.has(idx)) idx = (idx + 1) % count;
+      set.add(idx);
+    }
+    return Array.from(set).sort((a, b) => a - b);
   }
 
   const seed = getCardSeed(reading.cards[0]);
@@ -531,12 +565,37 @@ function CheoneumRevealCard({ reveal, item }: { reveal: Animated.Value; item: Ch
   );
 }
 
+// 뽑기 공개단계: 스프레드 자리 격자대로 선택 카드들을 뒤집어 펼친다.
+// 고정 크기(116×168) 플립 카드를 격자로 배치한 뒤, 카드 수가 많은 스프레드는 화면에 맞게 축소한다.
+function CheoneumRevealBoard({ reading, reveal }: { reading: CheoneumReading; reveal: Animated.Value }) {
+  const { cols, rows } = getCheoneumLayoutGrid(reading);
+  const CARD_W = 116;
+  const CARD_H = 168;
+  const GAP = 10;
+  const boardW = cols * CARD_W + (cols - 1) * GAP;
+  const boardH = rows.length * CARD_H + (rows.length - 1) * GAP;
+  const fit = Math.min(1, 300 / boardW, 380 / boardH);
+
+  return (
+    <View style={[styles.cheoneumRevealBoard, { transform: [{ scale: fit }] }]}>
+      {rows.map((row, ri) => (
+        <View key={ri} style={styles.cheoneumRevealRow}>
+          {row.map((pos, ci) => {
+            const item = pos ? getCardByPosition(reading, pos) : undefined;
+            if (!item) return <View key={ci} style={styles.cheoneumFlipBox} />;
+            return <CheoneumRevealCard key={ci} reveal={reveal} item={item} />;
+          })}
+        </View>
+      ))}
+    </View>
+  );
+}
+
 function CheoneumDrawOverlay({ reading, onDone }: { reading: CheoneumReading; onDone: () => void }) {
   const backCount = getDrawBackCount(reading);
   const selectedIndices = getSelectedBackIndices(backCount, reading);
-  const isYangeuiDraw = reading.spread === 'yangeui' && reading.cards.length >= 2;
-  const yangeuiLeft = getCardByPosition(reading, 'left-yin') ?? reading.cards[0];
-  const yangeuiRight = getCardByPosition(reading, 'right-yang') ?? reading.cards[1];
+  const selCount = selectedIndices.length;
+  const isMultiDraw = selCount >= 2;
   const overlayOpacity = useRef(new Animated.Value(0)).current;
   const shuffle = useRef(new Animated.Value(0)).current;
   const fan = useRef(new Animated.Value(0)).current;
@@ -641,17 +700,16 @@ function CheoneumDrawOverlay({ reading, onDone }: { reading: CheoneumReading; on
               `${offset * 0.55}deg`,
             ],
           });
+          const offMid = selectionOrder - (selCount - 1) / 2;
+          const spacing = selCount <= 2 ? 116 : selCount <= 3 ? 80 : selCount <= 5 ? 52 : 34;
           const selectLift = isSelected
-            ? select.interpolate({ inputRange: [0, 1], outputRange: [0, isYangeuiDraw ? -46 : -54] })
+            ? select.interpolate({ inputRange: [0, 1], outputRange: [0, isMultiDraw ? -46 : -54] })
             : 0;
           const selectX = isSelected
-            ? select.interpolate({
-                inputRange: [0, 1],
-                outputRange: [0, isYangeuiDraw ? (selectionOrder === 0 ? -58 : 58) : 0],
-              })
+            ? select.interpolate({ inputRange: [0, 1], outputRange: [0, offMid * spacing] })
             : 0;
           const selectScale = isSelected
-            ? select.interpolate({ inputRange: [0, 1], outputRange: [1, isYangeuiDraw ? 1.12 : 1.18] })
+            ? select.interpolate({ inputRange: [0, 1], outputRange: [1, isMultiDraw ? 1.12 : 1.18] })
             : 1;
           const ringOpacity = isSelected
             ? select.interpolate({ inputRange: [0, 0.35, 1], outputRange: [0, 1, 1] })
@@ -703,21 +761,13 @@ function CheoneumDrawOverlay({ reading, onDone }: { reading: CheoneumReading; on
         <Animated.View
           style={[
             styles.cheoneumOverlayReveal,
-            isYangeuiDraw && styles.cheoneumOverlayRevealPair,
             {
               opacity: revealOpacity,
               transform: [{ scale: revealScale }],
             },
           ]}
         >
-          {isYangeuiDraw ? (
-            <>
-              {!!yangeuiLeft && <CheoneumRevealCard reveal={reveal} item={yangeuiLeft} />}
-              {!!yangeuiRight && <CheoneumRevealCard reveal={reveal} item={yangeuiRight} />}
-            </>
-          ) : (
-            !!reading.cards[0] && <CheoneumRevealCard reveal={reveal} item={reading.cards[0]} />
-          )}
+          <CheoneumRevealBoard reading={reading} reveal={reveal} />
         </Animated.View>
         <Animated.View style={[styles.cheoneumSkipHintWrap, { opacity: hintOpacity }]} pointerEvents="none">
           <Text style={styles.cheoneumSkipHint}>탭하여 건너뛰기</Text>
@@ -1556,6 +1606,33 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
+  },
+  cheoneumBoard: {
+    gap: 8,
+    alignItems: 'center',
+    alignSelf: 'stretch',
+  },
+  cheoneumBoardRow: {
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+    alignSelf: 'stretch',
+  },
+  cheoneumBoardCell: {
+    flex: 1,
+    maxWidth: 118,
+    alignItems: 'stretch',
+  },
+  cheoneumRevealBoard: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+  },
+  cheoneumRevealRow: {
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   cheoneumOverlay: {
     ...StyleSheet.absoluteFillObject,
