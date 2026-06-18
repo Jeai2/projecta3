@@ -39,7 +39,7 @@ import { buildDefenseReply, buildDefenseReturnReply, decideDefense } from "../se
 import { createCheoneumReading, getCheoneumCardCounts } from "../cheoneum/cheoneum.service";
 import { buildCheoneumClientHint, buildCheoneumInsight, createTodayCheoneumDecision, decideCheoneumIntervention } from "../cheoneum/cheoneum-consultation.service";
 import { decideSubjectClarify } from "../services/subject-clarify.service";
-import { buildPaywallReply, consumeSpreadAccess, decideSpreadAccess, getWallet, grantCredits, setSubscribed } from "../services/cheoneum-wallet.service";
+import { buildLoginRequiredReply, buildPaywallReply, consumeSpreadAccess, decideSpreadAccess, getWallet, grantCredits, setLoggedIn, setSubscribed } from "../services/cheoneum-wallet.service";
 import type { CheoneumSpreadId } from "../cheoneum/cheoneum.types";
 import { getLukimInterpretation, type LukimInterpretation } from "../data/lukim-interpretations";
 import { matchCategories } from "../data/serious-keywords";
@@ -640,17 +640,20 @@ export const getMookAFortuneAPI = async (
       // 결제 게이팅: 깊은 스프레드는 크레딧/구독/첫무료가 있어야 펼친다.
       const access = decideSpreadAccess(cheoneumDecision.spread, sessionUserId);
       if (!access.allowed) {
-        const reply = buildPaywallReply(aspect, access);
+        const loginGate = access.reason === "loginRequired" || access.reason === "previewExhausted";
+        const reply = loginGate ? buildLoginRequiredReply(aspect, access) : buildPaywallReply(aspect, access);
         appendConversationMessage(sessionUserId, "assistant", reply);
         await saveAuthorizedSession(sessionUserId, res);
-        console.log(`[페이월] ${access.spreadName} | cost=${access.cost} | credits=${access.credits}`);
+        console.log(`[게이트] ${access.reason} | ${access.spreadName} | cost=${access.cost} | login=${access.loggedIn}`);
         return res.status(200).json({
           error: false,
           conversationId: sessionUserId,
           reply,
           turnCount,
-          paywall: { spread: cheoneumDecision.spread, spreadName: access.spreadName, cost: access.cost },
-          wallet: { credits: access.credits, subscribed: access.subscribed },
+          ...(loginGate
+            ? { loginRequired: { spread: cheoneumDecision.spread, spreadName: access.spreadName } }
+            : { paywall: { spread: cheoneumDecision.spread, spreadName: access.spreadName, cost: access.cost } }),
+          wallet: { credits: access.credits, subscribed: access.subscribed, loggedIn: access.loggedIn },
         });
       }
       cheoneumReading = createCheoneumReading({ aspect, spread: cheoneumDecision.spread });
@@ -756,7 +759,7 @@ export const getMookAFortuneAPI = async (
         : undefined,
       wallet: (() => {
         const w = getWallet(sessionUserId);
-        return { credits: w.credits, subscribed: w.subscribed };
+        return { credits: w.credits, subscribed: w.subscribed, loggedIn: w.loggedIn };
       })(),
     });
   } catch (error) {
@@ -982,7 +985,7 @@ export const getWalletAPI = async (
 ) => {
   const id = resolveConversationId(req.query.conversationId, req.query.userId);
   const w = getWallet(id);
-  return res.status(200).json({ error: false, conversationId: id, wallet: { credits: w.credits, subscribed: w.subscribed } });
+  return res.status(200).json({ error: false, conversationId: id, wallet: { credits: w.credits, subscribed: w.subscribed, loggedIn: w.loggedIn } });
 };
 
 export const grantCreditsAPI = async (
@@ -993,7 +996,7 @@ export const grantCreditsAPI = async (
   const amount = typeof req.body.amount === "number" && req.body.amount > 0 ? Math.floor(req.body.amount) : 10;
   const w = grantCredits(id, amount);
   console.log(`[지갑] 충전(스텁) +${amount} → ${w.credits} | ${id}`);
-  return res.status(200).json({ error: false, conversationId: id, wallet: { credits: w.credits, subscribed: w.subscribed } });
+  return res.status(200).json({ error: false, conversationId: id, wallet: { credits: w.credits, subscribed: w.subscribed, loggedIn: w.loggedIn } });
 };
 
 export const setSubscriptionAPI = async (
@@ -1003,5 +1006,16 @@ export const setSubscriptionAPI = async (
   const id = resolveConversationId(req.body.conversationId, req.body.userId);
   const w = setSubscribed(id, req.body.on !== false);
   console.log(`[지갑] 구독(스텁) → ${w.subscribed} | ${id}`);
-  return res.status(200).json({ error: false, conversationId: id, wallet: { credits: w.credits, subscribed: w.subscribed } });
+  return res.status(200).json({ error: false, conversationId: id, wallet: { credits: w.credits, subscribed: w.subscribed, loggedIn: w.loggedIn } });
+};
+
+// 로그인 — v0 개발용 스텁. 실 구글 OAuth 검증 성공 시 동일하게 setLoggedIn 호출하면 됨.
+export const devLoginAPI = async (
+  req: Request<ParamsDictionary, any, { conversationId?: string; userId?: string }>,
+  res: Response,
+) => {
+  const id = resolveConversationId(req.body.conversationId, req.body.userId);
+  const w = setLoggedIn(id, true);
+  console.log(`[로그인] dev-login(스텁) | ${id}`);
+  return res.status(200).json({ error: false, conversationId: id, wallet: { credits: w.credits, subscribed: w.subscribed, loggedIn: w.loggedIn } });
 };

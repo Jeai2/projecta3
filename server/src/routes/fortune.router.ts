@@ -12,6 +12,7 @@ import {
   getWalletAPI,
   grantCreditsAPI,
   setSubscriptionAPI,
+  devLoginAPI,
 } from "../controllers/fortune.controller";
 
 
@@ -26,6 +27,7 @@ router.get("/greeting", getGreetingAPI);
 router.get("/wallet", getWalletAPI);
 router.post("/wallet/grant", grantCreditsAPI);
 router.post("/wallet/subscribe", setSubscriptionAPI);
+router.post("/dev-login", devLoginAPI);
 
 router.get("/session", getSessionAPI);
 router.post("/session/account-profile-candidate", linkAccountProfileCandidateAPI);

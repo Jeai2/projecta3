@@ -5,7 +5,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // 로컬 테스트: PC IP 주소. 배포 후 Railway URL로 교체
-const API_URL = 'http://10.77.247.214:3001';
+const API_URL = 'http://192.168.45.21:3001';
 
 const COLORS = {
   bg: '#0E0C0A',
@@ -72,11 +72,12 @@ type Message = {
   id: string;
   role: 'mook' | 'user';
   text: string;
-  kind?: 'normal' | 'defense' | 'cheoneum' | 'paywall';
+  kind?: 'normal' | 'defense' | 'cheoneum' | 'paywall' | 'login';
   defenseType?: DefenseType;
   defenseLocked?: boolean;
   cheoneum?: CheoneumReading;
   paywall?: { spread: string; spreadName: string; cost: number };
+  login?: { spreadName: string };
 };
 
 type DefenseType = 'vague' | 'laugh' | 'test' | 'attack' | 'unsafe' | 'return_intent';
@@ -136,8 +137,9 @@ type ChatResponse = {
   defenseType?: DefenseType;
   defenseLocked?: boolean;
   cheoneum?: CheoneumReading;
-  wallet?: { credits: number; subscribed: boolean };
+  wallet?: { credits: number; subscribed: boolean; loggedIn: boolean };
   paywall?: { spread: string; spreadName: string; cost: number };
+  loginRequired?: { spread: string; spreadName: string };
 };
 
 const CHEONEUM_CARD_IMAGES: Record<string, ImageSourcePropType> = {
@@ -864,7 +866,7 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
   const [conversationId] = useState(createConversationId);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoadingGreeting, setIsLoadingGreeting] = useState(true);
-  const [wallet, setWallet] = useState<{ credits: number; subscribed: boolean }>({ credits: 0, subscribed: false });
+  const [wallet, setWallet] = useState<{ credits: number; subscribed: boolean; loggedIn: boolean }>({ credits: 0, subscribed: false, loggedIn: false });
   const lastSentRef = useRef<string>('');
 
   useEffect(() => {
@@ -965,7 +967,7 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
     };
   }, []);
 
-  const applyWallet = (w?: { credits: number; subscribed: boolean }) => { if (w) setWallet(w); };
+  const applyWallet = (w?: { credits: number; subscribed: boolean; loggedIn: boolean }) => { if (w) setWallet(w); };
 
   const topUp = async (amount: number) => {
     try {
@@ -987,6 +989,17 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
     } catch { /* 무시 */ }
   };
 
+  // 로그인 — v0 스텁. 실 구글 OAuth는 expo-auth-session으로 토큰 받아 서버 검증 후 이 자리에 연결.
+  const devLogin = async () => {
+    try {
+      const res = await fetch(`${API_URL}/api/dev-login`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversationId }),
+      });
+      applyWallet((await res.json())?.wallet);
+    } catch { /* 무시 */ }
+  };
+
   const runChat = async (text: string) => {
     setIsTyping(true);
     try {
@@ -997,6 +1010,19 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
       });
       const data = await res.json() as ChatResponse;
       applyWallet(data.wallet);
+
+      // 로그인 필요(맛보기 너머): 로그인 안내 카드만 띄운다.
+      if (data.loginRequired) {
+        const lr = data.loginRequired;
+        setMessages(prev => [...prev, {
+          id: `${Date.now()}_login`,
+          role: 'mook',
+          text: data.reply ?? '여기서부터는 로그인이 필요해요.',
+          kind: 'login',
+          login: { spreadName: lr.spreadName },
+        }]);
+        return;
+      }
 
       // 결제 필요(페이월): 카드 펼치지 않고 충전/구독 안내 카드만 띄운다.
       if (data.paywall) {
@@ -1087,9 +1113,15 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
           <Text style={styles.headerName}>{aspectCopy.name}</Text>
           <Text style={styles.headerSub}>{aspectCopy.subtitle}</Text>
         </View>
-        <TouchableOpacity style={styles.creditChip} onPress={() => topUp(10)} activeOpacity={0.7}>
-          <Text style={styles.creditChipText}>{wallet.subscribed ? '⭐ 구독중' : `🔮 ${wallet.credits}`}</Text>
-        </TouchableOpacity>
+        {wallet.loggedIn ? (
+          <TouchableOpacity style={styles.creditChip} onPress={() => topUp(10)} activeOpacity={0.7}>
+            <Text style={styles.creditChipText}>{wallet.subscribed ? '⭐ 구독중' : `🔮 ${wallet.credits}`}</Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity style={styles.creditChip} onPress={devLogin} activeOpacity={0.7}>
+            <Text style={styles.creditChipText}>로그인</Text>
+          </TouchableOpacity>
+        )}
         <View style={styles.onlineDot} />
       </View>
 
@@ -1116,6 +1148,22 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
           }
           renderItem={({ item, index }) => {
             const isFirstMook = index === 0 || messages[index - 1]?.role !== 'mook';
+            if (item.kind === 'login') {
+              return (
+                <View style={styles.rowMook}>
+                  {isFirstMook ? (
+                    <View style={styles.avatarSm}><Image source={aspectCopy.avatarImage} style={styles.avatarSmImage} /></View>
+                  ) : (<View style={styles.avatarSpacer} />)}
+                  <View style={styles.paywallCard}>
+                    <Text style={styles.paywallText}>{item.text}</Text>
+                    <TouchableOpacity style={styles.paywallBtnPrimary} activeOpacity={0.85} onPress={async () => { await devLogin(); await retryReading(); }}>
+                      <Text style={styles.paywallBtnPrimaryText}>구글로 로그인하고 보기</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.paywallBalance}>로그인하면 더 깊은 펼침·기록·구독이 열려요</Text>
+                  </View>
+                </View>
+              );
+            }
             if (item.kind === 'paywall' && item.paywall) {
               return (
                 <View style={styles.rowMook}>
