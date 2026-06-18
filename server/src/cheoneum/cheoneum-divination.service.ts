@@ -9,6 +9,8 @@ import {
   SIPSIN_NAMES,
   type SipsinName,
 } from "./cheoneum-ilgi-interpretation.logic";
+import { buildCheoneumRelations, formatCheoneumRelations } from "./cheoneum-relations";
+import { buildSpreadStructureInsight } from "./cheoneum-spread-reading";
 
 type GanjiPair = {
   yang: string;
@@ -225,6 +227,21 @@ export function buildCheoneumDivinationInsight(
 
   if (!lines) return null;
 
+  // 기둥 A: 3장 이상 스프레드(통관/천지인/원형이정/순환/낙서구궁)에서만 패↔패 간지 관계를 사실 태그로 덧붙인다.
+  // 일기(1장)·양의(2장)는 카드 간 관계를 쓰지 않는다.
+  const relationEdges =
+    reading.cards.length >= 3
+      ? buildCheoneumRelations(
+          reading.cards.map((placed) => ({
+            label: placed.label,
+            ganji: getSinpaeGanji(placed.card, reading.polarity),
+            arcana: placed.card.arcana,
+          })),
+        )
+      : [];
+  const relationsBlock = relationEdges.length ? formatCheoneumRelations(relationEdges) : null;
+  const structureBlock = reading.cards.length >= 3 ? buildSpreadStructureInsight(reading, relationEdges) : null;
+
   return `[천음 점사 계산]
 - 점사일 일주: ${ilju}
 - 점사시간 시주: ${divinationHourGanji}
@@ -233,7 +250,7 @@ ${reading.spread === "yangeui" ? `- 양의 해석 기준: 각 패의 천간을 �
 - 운용: ${reading.polarity === "yang" ? "양의 천음" : "음의 천음"}
 - 계산식: ${reading.polarity === "yang" ? "천음 양간지 + 점사일 일주" : "천음 음간지 + 점사일 일주"}
 ${reading.spread === "ilgi" ? `- 일기 해석 흐름: ${ILGI_INTERPRETATION_FLOW.join(" -> ")}` : ""}
-${lines}
+${lines}${relationsBlock ? `\n\n${relationsBlock}` : ""}${structureBlock ? `\n\n${structureBlock}` : ""}
 
 [해석 골격 지침]
 - 위 십성 결과를 이번 카드 해석의 1차 근거로 삼는다.
