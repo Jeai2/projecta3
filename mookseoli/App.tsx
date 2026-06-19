@@ -1,5 +1,5 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, Pressable, FlatList, KeyboardAvoidingView, Keyboard, Platform, Animated, Easing, Image, ImageBackground, type ImageSourcePropType } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, Pressable, FlatList, KeyboardAvoidingView, Keyboard, Platform, Animated, Easing, Image, ImageBackground, Modal, ScrollView, type ImageSourcePropType } from 'react-native';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -142,6 +142,7 @@ type ChatResponse = {
   wallet?: { credits: number; subscribed: boolean; loggedIn: boolean };
   paywall?: { spread: string; spreadName: string; cost: number };
   loginRequired?: { spread: string; spreadName: string };
+  categories?: string[];
 };
 
 const CHEONEUM_CARD_IMAGES: Record<string, ImageSourcePropType> = {
@@ -160,7 +161,34 @@ const CHEONEUM_CARD_IMAGES: Record<string, ImageSourcePropType> = {
 };
 const CHEONEUM_CARD_BACK = require('./assets/cheoneum/card-back-cheoneum.png');
 
-const QUICK = ['오늘의 운세', '점 봐주세요', '이직 고민'];
+// 하단 추천 칩 — 상황(맥락)에 따라 바뀐다.
+const SUGGEST_OPENERS = ['오늘 운세 봐줘', '요즘 고민이 있어', '점 봐줘'];
+const SUGGEST_FOLLOWUP = ['더 깊게 봐줘', '조심할 건 뭐야', '그래서 어떻게 해'];
+const SUGGEST_ANSWER = ['응 맞아', '아니야', '잘 모르겠어'];
+// 분야 키워드 → 추천(서버 categories 문자열에 키워드가 들어있으면 매칭)
+const SUGGEST_RULES: Array<{ re: RegExp; chips: string[] }> = [
+  { re: /연애|연인|사랑|짝|이별|재회/, chips: ['그 사람 마음이 궁금해', '이 관계 계속해도 될까', '언제쯤 풀릴까'] },
+  { re: /직장|이직|취업|상사|커리어|일운/, chips: ['이직해도 될까', '지금 일이 안 풀려', '어떻게 풀어야 할까'] },
+  { re: /사업|창업|장사|매출/, chips: ['이 사업 잘 될까', '지금 확장해도 될까', '거래가 성사될까'] },
+  { re: /돈|재물|금전|투자|재테크/, chips: ['재물운 어때', '이거 투자해도 될까', '돈이 언제 들어올까'] },
+  { re: /공부|시험|학업|입시|자격/, chips: ['시험 잘 볼까', '합격할 수 있을까'] },
+  { re: /건강|몸|컨디션/, chips: ['요즘 너무 지쳐', '건강 괜찮을까'] },
+];
+
+function deriveSuggestions(data: ChatResponse): string[] {
+  // 로그인/결제 카드가 뜬 턴엔 칩을 숨긴다(카드 버튼이 처리).
+  if (data.loginRequired || data.paywall) return [];
+
+  const catText = (data.categories ?? []).join(' ');
+  const matched = SUGGEST_RULES.find(r => r.re.test(catText));
+  if (matched) {
+    // 분야별 2개 + 공통 후속 1개
+    return Array.from(new Set([...matched.chips.slice(0, 2), SUGGEST_FOLLOWUP[0]])).slice(0, 3);
+  }
+  if (data.cheoneum) return SUGGEST_FOLLOWUP; // 점사는 났는데 분야 미분류 → 공통 후속
+  if (/[?？]\s*$/.test(data.reply ?? '')) return SUGGEST_ANSWER; // 페르소나가 되물음
+  return SUGGEST_OPENERS;
+}
 const MAX_REPLY_BUBBLES = 5;
 const MAX_REPLY_BUBBLE_CHARS = 96;
 const MAX_DEFENSE_BUBBLES = 2;
@@ -806,6 +834,47 @@ function CheoneumSpreadView({ reading }: { reading: CheoneumReading }) {
   );
 }
 
+// 채팅이 꽉 차지 않게: 3장 이상 스프레드는 요약 칩으로 접고, 탭하면 모달로 크게 펼친다.
+function CheoneumSpreadSummary({ reading, onPress }: { reading: CheoneumReading; onPress: () => void }) {
+  return (
+    <Pressable style={styles.cheoneumSummary} onPress={onPress}>
+      <View style={styles.cheoneumSummaryStack}>
+        <Image source={CHEONEUM_CARD_BACK} style={[styles.cheoneumSummaryBack, { left: 0, opacity: 0.55 }]} />
+        <Image source={CHEONEUM_CARD_BACK} style={[styles.cheoneumSummaryBack, { left: 10, opacity: 0.78 }]} />
+        <Image source={CHEONEUM_CARD_BACK} style={[styles.cheoneumSummaryBack, { left: 20 }]} />
+      </View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.cheoneumSummaryTitle}>{reading.spreadName} · {reading.cards.length}장 펼침</Text>
+        <Text style={styles.cheoneumSummarySub}>탭하여 배치를 크게 보기</Text>
+      </View>
+      <Text style={styles.cheoneumSummaryChevron}>⤢</Text>
+    </Pressable>
+  );
+}
+
+function CheoneumSpreadModal({ reading, onClose }: { reading: CheoneumReading; onClose: () => void }) {
+  return (
+    <Modal visible transparent animationType="fade" statusBarTranslucent onRequestClose={onClose}>
+      <Pressable style={styles.cheoneumModalScrim} onPress={onClose}>
+        <Pressable style={styles.cheoneumModalCard} onPress={() => {}}>
+          <View style={styles.cheoneumModalHeader}>
+            <View style={styles.cheoneumBadge}>
+              <Text style={styles.cheoneumBadgeText}>{reading.spreadName}</Text>
+            </View>
+            <TouchableOpacity onPress={onClose} hitSlop={12}>
+              <Text style={styles.cheoneumModalClose}>✕</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView style={{ alignSelf: 'stretch' }} contentContainerStyle={{ paddingVertical: 4 }} showsVerticalScrollIndicator={false}>
+            <CheoneumSpreadCards reading={reading} />
+          </ScrollView>
+          <Text style={styles.cheoneumModalHint}>바깥을 탭하면 닫혀요</Text>
+        </Pressable>
+      </Pressable>
+    </Modal>
+  );
+}
+
 function SplashScreen({ aspect, onDone }: { aspect: Aspect; onDone: () => void }) {
   const aspectCopy = ASPECT_COPY[aspect];
   const r1Scale = useRef(new Animated.Value(0.05)).current;
@@ -994,6 +1063,8 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
   const [defenseLocked, setDefenseLocked] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [drawOverlay, setDrawOverlay] = useState<CheoneumReading | null>(null);
+  const [expandedReading, setExpandedReading] = useState<CheoneumReading | null>(null);
+  const [chips, setChips] = useState<string[]>(SUGGEST_OPENERS);
   const flatListRef = useRef<FlatList>(null);
   const nudgeTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const drawResolveRef = useRef<(() => void) | null>(null);
@@ -1129,6 +1200,7 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
       });
       const data = await res.json() as ChatResponse;
       applyWallet(data.wallet);
+      setChips(deriveSuggestions(data));
 
       // 로그인 필요(맛보기 너머): 로그인 안내 카드만 띄운다.
       if (data.loginRequired) {
@@ -1303,6 +1375,8 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
               );
             }
             if (item.kind === 'cheoneum' && item.cheoneum) {
+              const reading = item.cheoneum;
+              const compact = reading.cards.length > 2; // 3장 이상은 요약 칩 → 탭하면 모달
               return (
                 <View style={styles.rowMook}>
                   {isFirstMook ? (
@@ -1312,7 +1386,11 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
                   ) : (
                     <View style={styles.avatarSpacer} />
                   )}
-                  <CheoneumSpreadView reading={item.cheoneum} />
+                  {compact ? (
+                    <CheoneumSpreadSummary reading={reading} onPress={() => setExpandedReading(reading)} />
+                  ) : (
+                    <CheoneumSpreadView reading={reading} />
+                  )}
                 </View>
               );
             }
@@ -1360,13 +1438,15 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
           }}
         />
 
-        <View style={styles.quickWrap}>
-          {QUICK.map(q => (
-            <TouchableOpacity key={q} style={styles.chip} onPress={() => send(q)}>
-              <Text style={styles.chipText}>{q}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
+        {chips.length > 0 && !isTyping && (
+          <View style={styles.quickWrap}>
+            {chips.map(q => (
+              <TouchableOpacity key={q} style={styles.chip} onPress={() => send(q)}>
+                <Text style={styles.chipText}>{q}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
 
         <View style={[styles.inputRow, { paddingBottom: isKeyboardVisible ? 11 : Math.max(insets.bottom, 11) }]}>
           <TextInput
@@ -1387,6 +1467,7 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
         </View>
       </KeyboardAvoidingView>
       {drawOverlay && <CheoneumDrawOverlay reading={drawOverlay} onDone={finishCheoneumDraw} />}
+      {expandedReading && <CheoneumSpreadModal reading={expandedReading} onClose={() => setExpandedReading(null)} />}
     </View>
   );
 }
@@ -1657,6 +1738,77 @@ const styles = StyleSheet.create({
   cheoneumBadgeText: {
     fontSize: 10,
     color: COLORS.gold,
+  },
+  cheoneumSummary: {
+    width: '78%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    borderRadius: 14,
+    borderWidth: 0.8,
+    borderColor: 'rgba(201, 169, 110, 0.42)',
+    backgroundColor: 'rgba(18, 15, 11, 0.94)',
+    paddingVertical: 11,
+    paddingHorizontal: 13,
+  },
+  cheoneumSummaryStack: {
+    width: 48,
+    height: 38,
+  },
+  cheoneumSummaryBack: {
+    position: 'absolute',
+    top: 0,
+    width: 26,
+    height: 38,
+    borderRadius: 5,
+    borderWidth: 0.8,
+    borderColor: 'rgba(229, 194, 117, 0.6)',
+  },
+  cheoneumSummaryTitle: {
+    color: COLORS.gold,
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  cheoneumSummarySub: {
+    color: 'rgba(222, 212, 192, 0.55)',
+    fontSize: 11,
+    marginTop: 2,
+  },
+  cheoneumSummaryChevron: {
+    color: COLORS.gold,
+    fontSize: 17,
+  },
+  cheoneumModalScrim: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+  },
+  cheoneumModalCard: {
+    width: '92%',
+    maxHeight: '86%',
+    borderRadius: 16,
+    borderWidth: 0.8,
+    borderColor: 'rgba(201, 169, 110, 0.5)',
+    backgroundColor: 'rgba(16, 13, 10, 0.98)',
+    padding: 16,
+  },
+  cheoneumModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  cheoneumModalClose: {
+    color: COLORS.gold,
+    fontSize: 18,
+  },
+  cheoneumModalHint: {
+    color: 'rgba(222, 212, 192, 0.45)',
+    fontSize: 11,
+    textAlign: 'center',
+    marginTop: 12,
   },
   cheoneumSingleLayout: {
     alignItems: 'center',
