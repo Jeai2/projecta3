@@ -9,8 +9,36 @@ import {
   SIPSIN_NAMES,
   type SipsinName,
 } from "./cheoneum-ilgi-interpretation.logic";
-import { buildCheoneumRelations, formatCheoneumRelations } from "./cheoneum-relations";
+import { buildCheoneumRelations, formatCheoneumRelations, type RelationEdge } from "./cheoneum-relations";
 import { buildSpreadStructureInsight } from "./cheoneum-spread-reading";
+import { buildNakseoEngineInsight } from "./cheoneum-nakseo-engine";
+import type { CheoneumRelationCategory } from "./cheoneum-relation-interpretation.data";
+
+// 관계 블록이 길어지면(특히 낙서구궁 9장) 해석이 산만해진다.
+// 중앙(신패)이 얽힌 관계와 강한 합/충을 우선해 top N만 해석 블록에 싣는다.
+// (구조 판독에는 전체 엣지를 그대로 넘기므로 판의 큰 그림은 유지된다.)
+const RELATION_PRIORITY: Record<string, number> = {
+  천간합: 5, 천간충: 5, 삼합: 5, 충: 5, 삼형: 5, 방합: 4,
+  육합: 3, 반합: 3, 암합: 3, 파: 1, 해: 1,
+};
+
+function selectTopRelationEdges(
+  edges: RelationEdge[],
+  centerLabel: string | undefined,
+  max: number,
+): RelationEdge[] {
+  if (edges.length <= max) return edges;
+  return edges
+    .map((e) => {
+      let score = RELATION_PRIORITY[e.kind] ?? 2; // 결합 양태(신생진 등) 기본 2
+      if (centerLabel && e.members.includes(centerLabel)) score += 10; // 중앙 얽힘 최우선
+      if (e.guk) score += 1; // 합화 국 있으면 약간 가산
+      return { e, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .slice(0, max)
+    .map((x) => x.e);
+}
 
 type GanjiPair = {
   yang: string;
@@ -158,6 +186,7 @@ function getSinpaeGanji(card: CheoneumCard, polarity: CheoneumReading["polarity"
 export function buildCheoneumDivinationInsight(
   reading: CheoneumReading,
   referenceDate = new Date(),
+  category?: CheoneumRelationCategory,
 ): string | null {
   const ilju = getDayGanji(referenceDate);
   const dayGan = ilju[0];
@@ -227,10 +256,11 @@ export function buildCheoneumDivinationInsight(
 
   if (!lines) return null;
 
-  // 기둥 A: 3장 이상 스프레드(통관/천지인/원형이정/순환/낙서구궁)에서만 패↔패 간지 관계를 사실 태그로 덧붙인다.
-  // 일기(1장)·양의(2장)는 카드 간 관계를 쓰지 않는다.
+  // 기둥 A: 3장 이상 스프레드에서 패↔패 간지 관계를 사실 태그로 덧붙인다. 일기(1장)·양의(2장)는 제외.
+  // 낙서구궁은 일반 관계표 대신 전용 운기 엔진(중궁 방사/대로/횡액/사정사간)을 쓴다 → 일반 관계 블록은 생략.
+  const isNakseo = reading.spread === "nakseo-gugung";
   const relationEdges =
-    reading.cards.length >= 3
+    reading.cards.length >= 3 && !isNakseo
       ? buildCheoneumRelations(
           reading.cards.map((placed) => ({
             label: placed.label,
@@ -239,8 +269,21 @@ export function buildCheoneumDivinationInsight(
           })),
         )
       : [];
-  const relationsBlock = relationEdges.length ? formatCheoneumRelations(relationEdges) : null;
-  const structureBlock = reading.cards.length >= 3 ? buildSpreadStructureInsight(reading, relationEdges) : null;
+  const centerLabel = reading.cards.find((c) => c.position === "center" || c.position === "junggung")?.label;
+  const topEdges = selectTopRelationEdges(relationEdges, centerLabel, 6);
+  const relationsBlock = topEdges.length ? formatCheoneumRelations(topEdges, category) : null;
+
+  let structureBlock: string | null = null;
+  if (isNakseo) {
+    // 자리별 한글 간지를 해소해 운기 엔진에 넘긴다(엔진은 양/음을 가려 납음/지장간 본기로 계산).
+    const ganjiByPosition: Record<string, string | null> = {};
+    reading.cards.forEach((placed) => {
+      ganjiByPosition[placed.position] = getSinpaeGanji(placed.card, reading.polarity);
+    });
+    structureBlock = buildNakseoEngineInsight(reading, ganjiByPosition);
+  } else if (reading.cards.length >= 3) {
+    structureBlock = buildSpreadStructureInsight(reading, relationEdges);
+  }
 
   return `[천음 점사 계산]
 - 점사일 일주: ${ilju}

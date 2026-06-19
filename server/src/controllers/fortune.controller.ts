@@ -37,7 +37,7 @@ import {
 } from "../services/session.service";
 import { buildDefenseReply, buildDefenseReturnReply, decideDefense } from "../services/defense.service";
 import { createCheoneumReading, getCheoneumCardCounts } from "../cheoneum/cheoneum.service";
-import { buildCheoneumClientHint, buildCheoneumInsight, createTodayCheoneumDecision, decideCheoneumIntervention } from "../cheoneum/cheoneum-consultation.service";
+import { buildCheoneumClientHint, buildCheoneumInsight, buildCheoneumFocusInsight, parseFocusPosition, createTodayCheoneumDecision, decideCheoneumIntervention } from "../cheoneum/cheoneum-consultation.service";
 import { decideSubjectClarify } from "../services/subject-clarify.service";
 import { buildLoginRequiredReply, buildPaywallReply, consumeSpreadAccess, decideSpreadAccess, getWallet, grantCredits, setLoggedIn, setSubscribed } from "../services/cheoneum-wallet.service";
 import type { CheoneumSpreadId } from "../cheoneum/cheoneum.types";
@@ -74,6 +74,11 @@ const CONTINUATION_QUESTION_PATTERN =
   /(무슨\s*(뜻|말)|뭐라는|뭐야|뭐\??|어떤\s*뜻|어떤\s*말|그게|그건|방금|아까|정면|다만|근데|그래서|그\s*다음|계속|이어|마저|더\s*말|설명|풀어|왜)/i;
 const NEW_READING_REQUEST_PATTERN =
   /(새로\s*봐|다시\s*봐|처음부터|카드\s*(뽑|열|펼)|패를\s*(뽑|열|펼)|운세|점\s*봐|할까|말까|선택|스프레드)/i;
+// 같은 판 후속(자리 콕 집기 / 더 보기) — 활성 리딩이 있을 때만 후속으로 인정
+const SPREAD_FOCUS_PATTERN =
+  /(동쪽|서쪽|남쪽|북쪽|북동|남동|남서|북서|동북|동남|서남|서북|중앙|가운데|중심|위쪽|아래쪽|열쇠|통관패|그\s*자리|이\s*자리|저\s*자리|왼쪽|오른쪽)/;
+const SPREAD_MORE_PATTERN =
+  /(더\s*(봐|보여|볼래|볼까|알려)|계속|또|다른\s*(자리|쪽|것)|나머지|딴\s*거)/;
 
 function normalizeShortText(message: string): string {
   return message.trim().replace(/\s+/g, " ");
@@ -91,10 +96,13 @@ function truncateForPrompt(value: string, limit: number): string {
   return normalized.length <= limit ? normalized : `${normalized.slice(0, limit)}...`;
 }
 
-function detectContinuationQuestion(message: string, history: ConversationMessage[]): ContinuationContext | null {
+function detectContinuationQuestion(
+  message: string,
+  history: ConversationMessage[],
+  options?: { hasActiveReading?: boolean },
+): ContinuationContext | null {
   const normalized = normalizeShortText(message);
   if (!normalized) return null;
-  if (NEW_READING_REQUEST_PATTERN.test(normalized)) return null;
 
   const lastAssistant = getLastMessage(history, "assistant");
   if (!lastAssistant || lastAssistant.content.length < 20) return null;
@@ -102,13 +110,20 @@ function detectContinuationQuestion(message: string, history: ConversationMessag
   const lastMessage = history[history.length - 1];
   if (lastMessage?.role !== "assistant") return null;
 
+  // 같은 판 후속: 펼친 스프레드가 있고 자리/“더 보기”를 가리키면 후속으로 본다(새로 안 뽑음).
+  const spreadFollowUp =
+    !!options?.hasActiveReading &&
+    (SPREAD_FOCUS_PATTERN.test(normalized) || SPREAD_MORE_PATTERN.test(normalized));
+
+  if (!spreadFollowUp && NEW_READING_REQUEST_PATTERN.test(normalized)) return null;
+
   const compactLength = normalized.replace(/[^\p{L}\p{N}]/gu, "").length;
   const asksFollowUp =
     CONTINUATION_QUESTION_PATTERN.test(normalized) ||
     (compactLength <= 14 && /[?？]$/.test(normalized)) ||
     /^(응|어|왜|뭐|그래서|그게|그건|계속|다음)[?？.!…\s]*$/i.test(normalized);
 
-  if (!asksFollowUp) return null;
+  if (!asksFollowUp && !spreadFollowUp) return null;
 
   return {
     lastAssistant: lastAssistant.content,
@@ -368,7 +383,8 @@ export const getMookAFortuneAPI = async (
       manualReset(sessionUserId);
     }
     const conversationHistory = getConversationHistory(sessionUserId);
-    const continuationContext = detectContinuationQuestion(combinedMessage, conversationHistory);
+    const hasActiveReading = !!getCheoneumSessionState(sessionUserId).lastReading;
+    const continuationContext = detectContinuationQuestion(combinedMessage, conversationHistory, { hasActiveReading });
     const defenseDecision = decideDefense(combinedMessage, getDefenseStatus(sessionUserId));
     const shouldBypassDefenseForContinuation =
       !!continuationContext &&
@@ -659,6 +675,10 @@ export const getMookAFortuneAPI = async (
       cheoneumReading = createCheoneumReading({ aspect, spread: cheoneumDecision.spread });
       cheoneumInsight = buildCheoneumInsight(cheoneumReading, cheoneumDecision, combinedMessage);
       consumeSpreadAccess(sessionUserId, access);
+    } else if (continuationContext && cheoneumSession.lastReading) {
+      // 같은 판 티키타카: 저장된 스프레드로 콕 집은 자리(또는 되묻기)를 이어 본다.
+      const focusPosition = parseFocusPosition(combinedMessage, cheoneumSession.lastReading);
+      cheoneumInsight = buildCheoneumFocusInsight(cheoneumSession.lastReading, focusPosition, cheoneumDecision, combinedMessage);
     } else if (continuationContext && cheoneumSession.lastSpread) {
       cheoneumInsight = buildContinuationInsight(continuationContext, cheoneumSession.lastSpread);
     }
@@ -668,6 +688,7 @@ export const getMookAFortuneAPI = async (
       depthLevel: cheoneumDecision.depthLevel,
       usedSpread: cheoneumReading?.spread,
       currentTurn: turnCount,
+      reading: cheoneumReading, // 새로 뽑은 턴에만 저장(undefined면 직전 패 유지)
     });
 
     console.log(`[세션] conversationId=${sessionUserId} | 턴=${turnCount} | 정단=${useJeongdan}${keywordJeongdan ? ` (분야: ${categoryNames.join(", ")})` : ''}${isCategorySwitch ? ` [전환: ${switchedCategories.join(", ")}]` : ''}`);

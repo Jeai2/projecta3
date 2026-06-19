@@ -120,23 +120,7 @@ function sunhwan(reading: CheoneumReading, edges: RelationEdge[]): string {
   ]);
 }
 
-// ── 낙서구궁: 중앙 신패가 판의 중심. 중앙과 강한 관계 맺은 방위만 추림 ──
-function nakseo(reading: CheoneumReading, edges: RelationEdge[]): string {
-  const center = labelAt(reading, "center");
-  const outerPositions = ["north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"];
-  const strong = outerPositions
-    .map((pos) => {
-      const label = labelAt(reading, pos);
-      const b = bondOf(relsBetween(edges, center, label));
-      return b === "무" ? null : `중앙 ↔ ${label ?? pos}: ${bondPhrase(b)}`;
-    })
-    .filter((x): x is string => x !== null);
-  return block("스프레드 구조 판독 — 낙서구궁", [
-    `축: 중앙 신패(${center ?? "?"})가 판 전체의 중심. 중앙과 8방의 관계로 판의 쏠림을 본다.`,
-    ...(strong.length ? strong : ["중앙이 8방과 직접 맺는 강한 관계는 적음 — 판이 분산되어 있음."]),
-    `읽기: 중앙과 합인 방위로 힘이 모이고, 충/형인 방위에서 판이 흔들린다.`,
-  ]);
-}
+// 낙서구궁은 전용 운기 엔진(cheoneum-nakseo-engine.ts)이 담당한다.
 
 export function buildSpreadStructureInsight(reading: CheoneumReading, edges: RelationEdge[]): string | null {
   switch (reading.spread) {
@@ -144,7 +128,6 @@ export function buildSpreadStructureInsight(reading: CheoneumReading, edges: Rel
     case "cheonjiin": return cheonjiin(reading, edges);
     case "wonhyeongijeong": return wonhyeong(reading, edges);
     case "sunhwan": return sunhwan(reading, edges);
-    case "nakseo-gugung": return nakseo(reading, edges);
     default: return null;
   }
 }

@@ -29,7 +29,9 @@ import { GAN_OHENG } from "../data/saju.data";
 import {
   CHEONEUM_GUK_MEANINGS,
   getCheoneumRelationSeed,
+  resolveRelationReading,
   type GukOhaeng,
+  type CheoneumRelationCategory,
 } from "./cheoneum-relation-interpretation.data";
 
 const GAN_HANJA: Record<string, string> = {
@@ -215,12 +217,15 @@ export function buildCheoneumRelations(cards: CardGanji[]): RelationEdge[] {
   return edges;
 }
 
-export function formatCheoneumRelations(edges: RelationEdge[]): string | null {
+export function formatCheoneumRelations(
+  edges: RelationEdge[],
+  category?: CheoneumRelationCategory,
+): string | null {
   if (!edges.length) return null;
 
   const lines = edges.map((e) => {
     const seed = getCheoneumRelationSeed(e.kind, e.combo);
-    const meaning = seed ? ` — ${seed.reading}` : "";
+    const meaning = seed ? ` — ${resolveRelationReading(seed, category)}` : "";
     return `- [${e.members.join(" ↔ ")}] ${e.detail}${meaning}`;
   });
 
@@ -234,6 +239,7 @@ export function formatCheoneumRelations(edges: RelationEdge[]): string | null {
 
   return `[카드 사이 관계]
 - 아래는 뽑힌 패들이 간지로 서로 어떻게 엮였는지의 사실 골격이다(앱 공용 관계표 기준). 각 카드를 따로 풀지 말고, 이 관계를 해석의 축으로 삼는다.
+- 각 줄의 해석은 이번 질문 맥락에 맞춰 이미 골라둔 것이다. 그대로 베끼지 말고 화선/화영 말투로 풀되, 맥락에 맞는 이 결을 벗어나지 않는다.
 - "신패 ↔ 진패"로 표시된 줄은 큰 흐름(신패)과 현실 사건(진패)의 결합 양태다.
 ${lines.join("\n")}${gukBlock}`;
 }

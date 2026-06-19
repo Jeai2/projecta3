@@ -6,6 +6,7 @@ import {
   type CheoneumReadingContext,
 } from "./cheoneum-interpretation.data";
 import { CHEONEUM_JINPAE_MEANINGS } from "./cheoneum-jinpae-interpretation.data";
+import type { CheoneumRelationCategory } from "./cheoneum-relation-interpretation.data";
 
 export type CheoneumInputType =
   | "greeting"
@@ -399,6 +400,32 @@ function getCheoneumReadingContext(
   }
 }
 
+// 관계/콤보 해석을 어느 분야로 읽을지 — byContext 선택용(해당 분야 없으면 reading 폴백).
+function getCheoneumRelationCategory(
+  decision: CheoneumInterventionDecision,
+  question: CheoneumQuestionProfile,
+): CheoneumRelationCategory {
+  switch (question.domain) {
+    case "relationship": return "연애";
+    case "career": return "직장";
+    case "business": return "사업";
+    case "money": return "돈";
+    case "study": return "공부";
+    case "health": return "건강";
+    case "choice": return "선택";
+  }
+  // 분야가 일상/일반이면, 시기·전망·반복·큰판 질문은 흐름으로 읽는다.
+  if (question.timeScope !== "today" && question.timeScope !== "unspecified") return "흐름";
+  if (
+    decision.inputType === "flow_timing" ||
+    decision.inputType === "repeating_pattern" ||
+    decision.inputType === "big_picture"
+  ) {
+    return "흐름";
+  }
+  return "일상";
+}
+
 function formatSeedList(values: string[] | undefined, limit: number): string {
   if (!values?.length) return "없음";
   return values.slice(0, limit).join(" / ");
@@ -528,12 +555,22 @@ ${escalationLine}
 - 비난하지 말고, 사용자가 스스로 패턴을 알아차리게 하는 소크라테스식 질문으로 마무리한다.`;
   }
 
-  if (reading.spread === "cheonjiin" || reading.spread === "nakseo-gugung") {
-    return `[천음 상위 스프레드 출력 지침]
-- 이 스프레드는 단일패보다 훨씬 디테일한 구조를 보는 단계다. 카드별 위치 의미를 살려 구체적으로 말한다.
-- 천지인은 하늘의 흐름, 현실의 조건, 사람의 선택을 나누어 본다.
-- 낙서구궁은 큰 판의 배치를 보는 최고 단계에 가깝다. 문제 하나만이 아니라 주변 조건과 장기 흐름까지 연결한다.
-- 답변은 충분히 구체적으로 하되, 한 번에 모든 것을 소진하지 말고 다음에 더 좁힐 지점을 남긴다.`;
+  if (reading.spread === "nakseo-gugung") {
+    return `[천음 낙서구궁 출력 지침 - 짧게, 티키타카로]
+- 낙서구궁은 큰 판 전체를 보는 최고 단계지만, 9자리를 한 번에 다 풀어 설명하지 않는다. 길게 늘어놓으면 오히려 무너진다.
+- 이번 응답은 "판을 막 열어 보여주는" 첫 마디다. 짧게 끊어 3~4문장 안으로 말한다.
+- 구성: 1) 판 전체의 첫인상 한 줄, 2) 지금 가장 눈에 띄는 축(중앙 신패가 어디로 힘을 모으고 어디서 흔들리는지)만 한두 가지 짚기, 3) 사용자가 한 곳을 고르게 만드는 짧은 되물음.
+- 출력은 빈 줄로 구분된 2~3덩어리로 끊는다(첫인상 / 핵심 축 / 짧은 되물음). 각 덩어리는 1~2문장.
+- 9개 자리와 모든 관계를 나열 금지. 카드 이름을 줄줄이 부르지 말고, 큰 쏠림(중앙↔강하게 얽힌 한두 방위)만 먼저 말한다.
+- 마지막은 반드시 짧은 질문으로 닫아 대화를 연다. 예: "어느 자리부터 들춰볼까?", "제일 마음에 걸리는 데가 어디야?"
+- 사용자가 한 자리를 고르면, 그다음 턴에 그 자리와 중앙의 관계를 깊게 판다. 깊이는 한 번에 쏟지 말고 주고받으며 나눠 푼다.`;
+  }
+
+  if (reading.spread === "cheonjiin") {
+    return `[천음 천지인 출력 지침]
+- 천지인은 하늘의 흐름(천), 현실의 조건(지), 사람의 선택(인) 세 층을 나누어 보는 스프레드다.
+- 카드별 위치 의미를 살려 구체적으로 말하되, 한 번에 모든 것을 소진하지 말고 다음에 더 좁힐 지점을 남긴다.
+- 인(사람의 선택)이 천·지 중 어느 쪽과 합/충인지로, 선택이 어디로 끌리는지 짚는다.`;
   }
 
   return `[천음 출력 지침]
@@ -547,7 +584,8 @@ export function buildCheoneumInsight(
   userMessage: string,
 ): string {
   const question = analyzeCheoneumQuestion(userMessage, decision);
-  const divinationInsight = buildCheoneumDivinationInsight(reading);
+  const relationCategory = getCheoneumRelationCategory(decision, question);
+  const divinationInsight = buildCheoneumDivinationInsight(reading, undefined, relationCategory);
   const cardMeaningInsight = buildCheoneumCardMeaningInsight(reading, decision, question);
   const responseGuide = buildCheoneumResponseGuide(reading, question);
   const cardLines = reading.cards
@@ -584,6 +622,63 @@ ${responseGuide}
 - 카드 의미 씨앗의 문장을 그대로 복사하지 말고, 질문 맥락과 십성 골격에 맞춰 자연스럽게 재구성한다.
 - 사용자에게 동조도 수치를 직접 말하지 마라.
 - [천음 일기 출력 지침]이 있는 경우, 기존의 짧은 대화 지침보다 그 지침을 우선한다.`;
+}
+
+// 후속 질문에서 사용자가 콕 집은 자리를 스프레드의 position 키로 해석한다.
+// (라벨 체계가 스프레드마다 달라 position 키로 매칭한다. 없으면 null → 자리 되묻기.)
+export function parseFocusPosition(message: string, reading: CheoneumReading): string | null {
+  const text = message.replace(/\s+/g, "");
+  const positions = new Set(reading.cards.map((c) => c.position));
+  const exists = (key: string) => positions.has(key) || reading.cards.some((c) => c.position.startsWith(key));
+  const pick = (cands: string[]) => cands.find(exists) ?? null;
+
+  // 복합 방위 먼저(북동이 북/동보다 우선)
+  const compound: Array<[RegExp, string[]]> = [
+    [/(북동|동북)/, ["northeast"]],
+    [/(남동|동남)/, ["southeast"]],
+    [/(남서|서남)/, ["southwest"]],
+    [/(북서|서북)/, ["northwest"]],
+  ];
+  for (const [re, cands] of compound) {
+    if (re.test(text)) { const p = pick(cands); if (p) return p; }
+  }
+  const simple: Array<[RegExp, string[]]> = [
+    [/(중앙|가운데|중심|한가운데)/, ["center"]],
+    [/동/, ["east"]],
+    [/서/, ["west"]],
+    [/남/, ["south"]],
+    [/북/, ["north"]],
+    [/(맨위|위쪽|위)/, ["top-heaven", "top-earth"]],
+    [/(맨아래|아래쪽|아래|바닥)/, ["bottom-heaven", "bottom-earth"]],
+    [/(가운데층|중간)/, ["middle-human"]],
+    [/(열쇠|통관패)/, ["tonggwan-key"]],
+  ];
+  for (const [re, cands] of simple) {
+    if (re.test(text)) { const p = pick(cands); if (p) return p; }
+  }
+  return null;
+}
+
+// 같은 판 티키타카: 저장된 스프레드를 다시 뽑지 않고, 한 자리(focusPosition)에 집중해 풀게 한다.
+// 기존 buildCheoneumInsight(전체 재료: 의미씨앗+십성+관계상한+구조)를 그대로 재사용하고,
+// 맨 앞에 "이 자리만 짧게 + 되묻기" 포커스 지침을 덧댄다.
+export function buildCheoneumFocusInsight(
+  reading: CheoneumReading,
+  focusPosition: string | null,
+  decision: CheoneumInterventionDecision,
+  userMessage: string,
+): string {
+  const base = buildCheoneumInsight(reading, decision, userMessage);
+  const focus = focusPosition ? reading.cards.find((c) => c.position === focusPosition) : undefined;
+  const guide = focus
+    ? `[천음 포커스 — '${focus.label}' 자리]
+- 사용자가 방금 펼친 같은 판에서 '${focus.label}' 자리를 콕 집어 더 보길 원한다. 새 카드를 뽑지 말고 이 자리만 깊게 본다.
+- 위 재료 중 '${focus.label}' 자리 카드와 중앙의 관계에만 집중해 2~4문장으로 답한다. 다른 자리는 언급하지 않는다.
+- 끝에 다음에 볼 자리를 짧게 되묻는다. 예: "다음은 어디 볼까?"`
+    : `[천음 포커스 — 자리 고르기]
+- 사용자가 같은 판을 더 보고 싶어 하지만 어느 자리인지 콕 집지 않았다. 새 카드를 뽑지 말고 같은 판을 이어 본다.
+- 9자리를 다 풀지 말고, 가장 눈에 띄는 자리(중앙과 강하게 얽힌 곳) 하나를 짧게 짚거나, "어느 자리부터 볼까?"라고 되물어 사용자가 고르게 한다. 2~3문장.`;
+  return `${guide}\n\n${base}`;
 }
 
 export function buildCheoneumClientHint(

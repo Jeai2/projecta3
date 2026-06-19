@@ -10,6 +10,7 @@ import {
   type ConsultationIntakeStage,
   type ConsultationPersonProfile,
 } from "../types/consultation";
+import type { CheoneumReading } from "../cheoneum/cheoneum.types";
 
 const NUDGE_TIMEOUT_MS = 30 * 60 * 1000; // 30분
 const MAX_CONVERSATION_MESSAGES = 16;
@@ -37,6 +38,10 @@ export interface CheoneumSessionState {
   lastUsedAtTurn: number | null;
   lastSpread: string | null;
   lastDepth: number;
+  // 방금 펼친 스프레드(카드 배열)를 통째로 보관 → 다음 턴에 같은 패로 한 자리씩 파고들기 위함.
+  // 스프레드 1개만 덮어쓴다(누적 금지). 후속 질문 턴에는 유지된다.
+  lastReading: CheoneumReading | null;
+  lastReadingTurn: number | null;
 }
 
 interface Session {
@@ -93,6 +98,8 @@ function createSession(): Session {
       lastUsedAtTurn: null,
       lastSpread: null,
       lastDepth: 0,
+      lastReading: null,
+      lastReadingTurn: null,
     },
     consultation: createEmptyConsultationContext(),
     messages: [],
@@ -342,12 +349,18 @@ export function restoreSessionSnapshot(userId: string, snapshot: PersistedSessio
           updatedAt: null,
         },
     cheoneum: snapshot.cheoneum
-      ? { ...snapshot.cheoneum }
+      ? {
+          ...snapshot.cheoneum,
+          lastReading: snapshot.cheoneum.lastReading ?? null,
+          lastReadingTurn: snapshot.cheoneum.lastReadingTurn ?? null,
+        }
       : {
           resonance: 20,
           lastUsedAtTurn: null,
           lastSpread: null,
           lastDepth: 0,
+          lastReading: null,
+          lastReadingTurn: null,
         },
     consultation: cloneConsultation(snapshot.consultation),
     messages: snapshot.messages
@@ -467,6 +480,7 @@ export function updateCheoneumSessionState(
     usedSpread?: string | null;
     depthLevel?: number;
     currentTurn?: number;
+    reading?: CheoneumReading | null;
   },
 ): CheoneumSessionState {
   const session = ensureSession(userId);
@@ -482,6 +496,13 @@ export function updateCheoneumSessionState(
     current.lastSpread = update.usedSpread;
     if (update.usedSpread && typeof update.currentTurn === "number") {
       current.lastUsedAtTurn = update.currentTurn;
+    }
+  }
+  // 새 스프레드를 뽑은 턴에만 reading을 넘긴다. 후속 질문 턴에는 넘기지 않아 직전 패가 유지된다.
+  if (update.reading !== undefined) {
+    current.lastReading = update.reading;
+    if (update.reading && typeof update.currentTurn === "number") {
+      current.lastReadingTurn = update.currentTurn;
     }
   }
 

@@ -1,4 +1,5 @@
 import type { CheoneumArcana, CheoneumOrientation, CheoneumPolarity, CheoneumSpreadId } from "./cheoneum.types";
+import { CHEONEUM_GUGUNG, CHEONEUM_NAKSEO_CHIMRO } from "./cheoneum-nakseo.data";
 
 export interface CheoneumPositionRule {
   position: string;
@@ -14,28 +15,6 @@ export interface CheoneumSpreadDefinition {
   name: string;
   positions: CheoneumPositionRule[];
 }
-
-const CLOCKWISE_NAKSEO: Array<Pick<CheoneumPositionRule, "position" | "label" | "row" | "col">> = [
-  { position: "south", label: "6시", row: 2, col: 1 },
-  { position: "southwest", label: "7시 30분", row: 2, col: 0 },
-  { position: "west", label: "9시", row: 1, col: 0 },
-  { position: "northwest", label: "10시 30분", row: 0, col: 0 },
-  { position: "north", label: "12시", row: 0, col: 1 },
-  { position: "northeast", label: "1시 30분", row: 0, col: 2 },
-  { position: "east", label: "3시", row: 1, col: 2 },
-  { position: "southeast", label: "4시 30분", row: 2, col: 2 },
-];
-
-const COUNTERCLOCKWISE_NAKSEO: Array<Pick<CheoneumPositionRule, "position" | "label" | "row" | "col">> = [
-  { position: "south", label: "6시", row: 2, col: 1 },
-  { position: "southeast", label: "4시 30분", row: 2, col: 2 },
-  { position: "east", label: "3시", row: 1, col: 2 },
-  { position: "northeast", label: "1시 30분", row: 0, col: 2 },
-  { position: "north", label: "12시", row: 0, col: 1 },
-  { position: "northwest", label: "10시 30분", row: 0, col: 0 },
-  { position: "west", label: "9시", row: 1, col: 0 },
-  { position: "southwest", label: "7시 30분", row: 2, col: 0 },
-];
 
 function jinpae(position: string, label: string, orientation: CheoneumOrientation = "vertical", row?: number, col?: number): CheoneumPositionRule {
   return { position, label, arcana: "jinpae", orientation, row, col };
@@ -131,14 +110,16 @@ export function getCheoneumSpreadDefinition(
               ],
       };
     case "nakseo-gugung": {
-      const outer = polarity === "yin" ? COUNTERCLOCKWISE_NAKSEO : CLOCKWISE_NAKSEO;
+      // 침로(針路): 중궁(신패) → 낙서수 6→7→8→9→1→2→3→4 순. 배치 좌표는 낙서 마방진(궁 스펙).
+      // 운용(양/음)은 배치를 바꾸지 않는다 — 운기 엔진(cheoneum-nakseo-engine)에서 양/음을 가른다.
       return {
         id: spread,
         name: "낙서구궁",
-        positions: [
-          sinpae("center", "중앙", "vertical", 1, 1),
-          ...outer.map((item) => jinpae(item.position, item.label, "vertical", item.row, item.col)),
-        ],
+        positions: CHEONEUM_NAKSEO_CHIMRO.map((key) => {
+          const g = CHEONEUM_GUGUNG[key];
+          const place = g.key === "junggung" ? sinpae : jinpae;
+          return place(g.key, g.name, "vertical", g.row, g.col);
+        }),
       };
     }
     default: {

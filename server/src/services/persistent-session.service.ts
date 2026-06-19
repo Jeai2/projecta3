@@ -66,9 +66,11 @@ export async function hydratePersistentSession(
 ): Promise<PersistentSessionLoadStatus> {
   const db = getDatabaseClient();
   if (!db) return "disabled";
-  // 게스트(미로그인)는 영속화 대상이 아니므로 DB 조회 자체를 건너뛴다 → 매 요청의 DB 왕복 지연 제거.
-  // (로그인 도입 시: 토큰 기반 접근 제어로 forbidden 가드를 복원할 것)
+  // 소유자(로그인 토큰 or 기기 UUID)가 없으면 영속화 대상이 아니므로 DB 조회를 건너뛴다.
   if (!authenticatedUserId) return "disabled";
+  // 활성 대화(인메모리 세션 존재) 중에는 DB 왕복을 건너뛴다 → 매 턴 지연 방지.
+  // 콜드 스타트(앱/서버 재시작으로 인메모리 없음)에서만 아래에서 1회 DB 복원한다.
+  if (hasInMemorySession(conversationId)) return "loaded";
 
   try {
     const stored = await db.consultationSession.findUnique({ where: { id: conversationId } });

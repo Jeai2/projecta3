@@ -3,6 +3,8 @@ import { StyleSheet, Text, View, TextInput, TouchableOpacity, Pressable, FlatLis
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as SecureStore from 'expo-secure-store';
+import * as Crypto from 'expo-crypto';
 
 // 로컬 테스트: PC IP 주소. 배포 후 Railway URL로 교체
 const API_URL = 'http://192.168.45.21:3001';
@@ -191,22 +193,36 @@ function splitLongSentence(sentence: string, maxChars: number): string[] {
 function splitReplyIntoBubbles(reply: string): string[] {
   const normalized = reply.replace(/\r/g, '').trim();
   if (!normalized) return [];
-  if (normalized.length <= MAX_REPLY_BUBBLE_CHARS) return [normalized];
 
-  const sentenceMatches = normalized.match(/[^.!?。！？…\n]+[.!?。！？…]*/g) ?? [normalized];
-  const sentences = sentenceMatches
-    .map(part => part.trim())
-    .filter(Boolean)
-    .flatMap(part => splitLongSentence(part, MAX_REPLY_BUBBLE_CHARS));
+  // 1) 작가(페르소나)가 빈 줄로 끊은 비트를 하드 경계로 본다. 없으면 단일 줄바꿈도 경계로.
+  //    이 경계는 절대 넘어 병합하지 않는다 → 의도한 말풍선 끊김 보존.
+  let segments = normalized.split(/\n{2,}/).map(s => s.trim()).filter(Boolean);
+  if (segments.length <= 1) {
+    segments = normalized.split(/\n+/).map(s => s.trim()).filter(Boolean);
+  }
 
+  // 2) 각 비트 안에서만 문장/길이 기준으로 다시 쪼개고 병합(읽기 좋게 하는 안전망).
   const bubbles: string[] = [];
-  for (const sentence of sentences) {
-    const last = bubbles[bubbles.length - 1];
-    if (last && `${last} ${sentence}`.length <= MAX_REPLY_BUBBLE_CHARS) {
-      bubbles[bubbles.length - 1] = `${last} ${sentence}`;
-    } else {
-      bubbles.push(sentence);
+  for (const seg of segments) {
+    if (seg.length <= MAX_REPLY_BUBBLE_CHARS) {
+      bubbles.push(seg);
+      continue;
     }
+    const sentenceMatches = seg.match(/[^.!?。！？…]+[.!?。！？…]*/g) ?? [seg];
+    const sentences = sentenceMatches
+      .map(part => part.trim())
+      .filter(Boolean)
+      .flatMap(part => splitLongSentence(part, MAX_REPLY_BUBBLE_CHARS));
+    const local: string[] = [];
+    for (const sentence of sentences) {
+      const last = local[local.length - 1];
+      if (last && `${last} ${sentence}`.length <= MAX_REPLY_BUBBLE_CHARS) {
+        local[local.length - 1] = `${last} ${sentence}`;
+      } else {
+        local.push(sentence);
+      }
+    }
+    bubbles.push(...local);
   }
 
   if (bubbles.length <= MAX_REPLY_BUBBLES) return bubbles;
@@ -910,21 +926,69 @@ function createConversationId(): string {
   return `app-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
 }
 
+// ── 연속성: 기기 UUID + conversationId를 안전 저장(SecureStore)해 앱 재시작에도 대화 유지 ──
+const DEVICE_ID_KEY = 'cheoneum_device_id';
+const CONVERSATION_ID_KEY = 'cheoneum_conversation_id';
+
+async function secureGet(key: string): Promise<string | null> {
+  try { return await SecureStore.getItemAsync(key); } catch { return null; }
+}
+async function secureSet(key: string, value: string): Promise<void> {
+  try { await SecureStore.setItemAsync(key, value); } catch { /* 저장 실패해도 진행 */ }
+}
+
+// 추측 불가능한 기기 식별자(세션 소유 증명). 진짜 OAuth 들어오면 토큰 기반으로 승격.
+async function getOrCreateDeviceId(): Promise<string> {
+  const existing = await secureGet(DEVICE_ID_KEY);
+  if (existing) return existing;
+  const id = `dev-${Crypto.randomUUID()}`;
+  await secureSet(DEVICE_ID_KEY, id);
+  return id;
+}
+async function getOrCreateConversationId(): Promise<string> {
+  const existing = await secureGet(CONVERSATION_ID_KEY);
+  if (existing) return existing;
+  const id = createConversationId();
+  await secureSet(CONVERSATION_ID_KEY, id);
+  return id;
+}
+
 function ChatScreen({ aspect }: { aspect: Aspect }) {
   const aspectCopy = ASPECT_COPY[aspect];
   const insets = useSafeAreaInsets();
-  const [conversationId] = useState(createConversationId);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const deviceIdRef = useRef<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [isLoadingGreeting, setIsLoadingGreeting] = useState(true);
   const [wallet, setWallet] = useState<{ credits: number; subscribed: boolean; loggedIn: boolean }>({ credits: 0, subscribed: false, loggedIn: false });
   const lastSentRef = useRef<string>('');
 
+  // 모든 API 호출에 기기 식별자(X-Device-Id)를 자동 주입한다.
+  const apiFetch = useCallback((path: string, init?: RequestInit) => {
+    return fetch(`${API_URL}${path}`, {
+      ...init,
+      headers: { ...(init?.headers ?? {}), 'X-Device-Id': deviceIdRef.current ?? '' },
+    });
+  }, []);
+
+  // 앱 시작: 저장된 기기 UUID + conversationId 로드(없으면 생성·저장) → 재시작에도 같은 대화 복원
   useEffect(() => {
-    fetch(`${API_URL}/api/wallet?conversationId=${encodeURIComponent(conversationId)}`)
+    let cancelled = false;
+    (async () => {
+      deviceIdRef.current = await getOrCreateDeviceId();
+      const cid = await getOrCreateConversationId();
+      if (!cancelled) setConversationId(cid);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!conversationId) return;
+    apiFetch(`/api/wallet?conversationId=${encodeURIComponent(conversationId)}`)
       .then(r => r.json())
       .then(d => { if (d?.wallet) setWallet(d.wallet); })
       .catch(() => {});
-  }, [conversationId]);
+  }, [conversationId, apiFetch]);
   const [input, setInput] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [defenseLocked, setDefenseLocked] = useState(false);
@@ -949,8 +1013,9 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
   }, []);
 
   const checkNudge = useCallback(async () => {
+    if (!conversationId) return;
     try {
-      const res = await fetch(`${API_URL}/api/session/nudge?conversationId=${encodeURIComponent(conversationId)}`);
+      const res = await apiFetch(`/api/session/nudge?conversationId=${encodeURIComponent(conversationId)}`);
       const data = await res.json();
       if (data.nudge && data.message) {
         setMessages(prev => [...prev, {
@@ -960,7 +1025,7 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
         }]);
       }
     } catch { /* 무시 */ }
-  }, [conversationId]);
+  }, [conversationId, apiFetch]);
 
   // 넛지 폴링 시작/정지
   useEffect(() => {
@@ -1020,8 +1085,9 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
   const applyWallet = (w?: { credits: number; subscribed: boolean; loggedIn: boolean }) => { if (w) setWallet(w); };
 
   const topUp = async (amount: number) => {
+    if (!conversationId) return;
     try {
-      const res = await fetch(`${API_URL}/api/wallet/grant`, {
+      const res = await apiFetch(`/api/wallet/grant`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversationId, amount }),
       });
@@ -1030,8 +1096,9 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
   };
 
   const subscribe = async () => {
+    if (!conversationId) return;
     try {
-      const res = await fetch(`${API_URL}/api/wallet/subscribe`, {
+      const res = await apiFetch(`/api/wallet/subscribe`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversationId, on: true }),
       });
@@ -1041,8 +1108,9 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
 
   // 로그인 — v0 스텁. 실 구글 OAuth는 expo-auth-session으로 토큰 받아 서버 검증 후 이 자리에 연결.
   const devLogin = async () => {
+    if (!conversationId) return;
     try {
-      const res = await fetch(`${API_URL}/api/dev-login`, {
+      const res = await apiFetch(`/api/dev-login`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversationId }),
       });
@@ -1051,9 +1119,10 @@ function ChatScreen({ aspect }: { aspect: Aspect }) {
   };
 
   const runChat = async (text: string) => {
+    if (!conversationId) return;
     setIsTyping(true);
     try {
-      const res = await fetch(`${API_URL}/api/chat`, {
+      const res = await apiFetch(`/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ conversationId, message: text, aspect }),
